@@ -3,7 +3,11 @@ import { Order } from '../models/Order.js'
 import { ApiError } from '../utils/ApiError.js'
 import { slugify } from '../utils/slugify.js'
 import { parsePagination, paginationMeta } from '../utils/pagination.js'
-import { safeDeleteUnreferencedAsset } from './imageService.js'
+import {
+  buildDeliveryUrl,
+  isCloudinaryReady,
+  safeDeleteUnreferencedAsset,
+} from './imageService.js'
 import { rupeesToPaise, paiseToRupees } from '../utils/money.js'
 
 function syncMoneyFields(input) {
@@ -14,6 +18,25 @@ function syncMoneyFields(input) {
   } else if (input.price != null && Number.isFinite(Number(input.price))) {
     out.price = Number(input.price)
     out.pricePaise = rupeesToPaise(out.price)
+  }
+  return out
+}
+
+/** Prefer Cloudinary delivery URLs when public IDs exist (local /products paths often missing). */
+function withMediaUrls(product) {
+  if (!product || !isCloudinaryReady()) return product
+  const out = { ...product }
+  try {
+    if (out.imagePublicId) {
+      out.image = buildDeliveryUrl(out.imagePublicId)
+    }
+    if (Array.isArray(out.galleryPublicIds) && out.galleryPublicIds.length) {
+      out.gallery = out.galleryPublicIds.map((id) => buildDeliveryUrl(id))
+    } else if (out.imagePublicId) {
+      out.gallery = [out.image]
+    }
+  } catch {
+    /* keep stored URLs if Cloudinary URL build fails */
   }
   return out
 }
@@ -47,20 +70,20 @@ export async function listPublicProducts(query) {
   ])
 
   return {
-    products: products.map((p) => p.toJSON()),
+    products: products.map((p) => withMediaUrls(p.toJSON())),
     meta: paginationMeta(page, limit, total),
   }
 }
 
 export async function listFeaturedProducts() {
   const products = await Product.find({ active: true, featured: true }).sort({ name: 1 })
-  return products.map((p) => p.toJSON())
+  return products.map((p) => withMediaUrls(p.toJSON()))
 }
 
 export async function getProductBySlug(slug) {
   const product = await Product.findOne({ slug, active: true })
   if (!product) throw new ApiError(404, 'PRODUCT_NOT_FOUND', 'Product not found.')
-  return product.toJSON()
+  return withMediaUrls(product.toJSON())
 }
 
 export async function listAdminProducts(query) {
@@ -75,7 +98,7 @@ export async function listAdminProducts(query) {
   ])
 
   return {
-    products: products.map((p) => p.toJSON()),
+    products: products.map((p) => withMediaUrls(p.toJSON())),
     meta: paginationMeta(page, limit, total),
   }
 }
@@ -83,7 +106,7 @@ export async function listAdminProducts(query) {
 export async function getAdminProduct(id) {
   const product = await Product.findById(id)
   if (!product) throw new ApiError(404, 'PRODUCT_NOT_FOUND', 'Product not found.')
-  return product.toJSON()
+  return withMediaUrls(product.toJSON())
 }
 
 export async function createProduct(input) {

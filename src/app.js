@@ -30,7 +30,10 @@ export function createApp() {
 
   const allowedOrigins = new Set(
     [
-      env.clientUrl,
+      ...String(env.clientUrl)
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
       'http://localhost:5178',
       'http://localhost:5173',
       'http://127.0.0.1:5178',

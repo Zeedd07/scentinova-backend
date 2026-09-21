@@ -11,7 +11,8 @@
     "start": "node src/server.js",
     "seed": "node src/seed/seed.js",
     "seed:admin": "node src/seed/seedAdmin.js",
-    "migrate:prepaid": "node scripts/migratePrepaidSchema.js"
+    "migrate:prepaid": "node scripts/migratePrepaidSchema.js",
+    "migrate:local-to-atlas": "node scripts/migrateLocalToAtlas.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
