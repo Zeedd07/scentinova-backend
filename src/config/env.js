@@ -13,6 +13,30 @@ function required(key, fallback) {
   return value
 }
 
+/**
+ * Refresh-cookie SameSite:
+ * - COOKIE_SAMESITE=lax|none|strict overrides everything
+ * - Else if COOKIE_SECURE=true → 'none' (cross-origin SPA + API on HTTPS)
+ * - Else → 'lax' (local HTTP / same-site)
+ * SameSite=None always requires Secure (browsers enforce this).
+ */
+function resolveCookieSameSite() {
+  const raw = String(process.env.COOKIE_SAMESITE || '')
+    .toLowerCase()
+    .trim()
+  if (raw === 'lax' || raw === 'none' || raw === 'strict') return raw
+  if (String(process.env.COOKIE_SECURE).toLowerCase() === 'true') return 'none'
+  return 'lax'
+}
+
+function resolveCookieSecure(sameSite) {
+  if (sameSite === 'none') return true
+  return String(process.env.COOKIE_SECURE).toLowerCase() === 'true'
+}
+
+const cookieSameSite = resolveCookieSameSite()
+const cookieSecure = resolveCookieSecure(cookieSameSite)
+
 export const env = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: Number(process.env.PORT || 5000),
@@ -23,8 +47,10 @@ export const env = {
   jwtAccessExpires: process.env.JWT_ACCESS_EXPIRES || '15m',
   jwtRefreshExpires: process.env.JWT_REFRESH_EXPIRES || '7d',
   adminEmail: process.env.ADMIN_EMAIL || 'admin@scentinova.com',
-  adminPassword: process.env.ADMIN_PASSWORD || 'ChangeThisImmediately',
-  cookieSecure: String(process.env.COOKIE_SECURE).toLowerCase() === 'true',
+  /** No default — seed:admin must supply ADMIN_PASSWORD explicitly. */
+  adminPassword: process.env.ADMIN_PASSWORD || '',
+  cookieSecure,
+  cookieSameSite,
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000),
   rateLimitMax: Number(process.env.RATE_LIMIT_MAX || 100),
   cloudinary: {

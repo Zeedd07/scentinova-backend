@@ -9,6 +9,12 @@ import { env } from '../config/env.js'
 import { Admin } from '../models/Admin.js'
 
 async function seedAdmin() {
+  if (!env.adminPassword || !String(env.adminPassword).trim()) {
+    throw new Error(
+      'Missing required env: ADMIN_PASSWORD. Refusing to seed admin without an explicit password.',
+    )
+  }
+
   await connectDb()
 
   const email = env.adminEmail.toLowerCase()

@@ -10,8 +10,8 @@ async function start() {
   const app = createApp()
   const jobTimer = startBackgroundJobs()
 
-  const server = app.listen(env.port, () => {
-    console.log(`[Scentinova API] Running on port ${env.port}`)
+  const server = app.listen(env.port, '0.0.0.0', () => {
+    console.log(`[Scentinova API] Running on 0.0.0.0:${env.port}`)
     console.log(
       `[Cloudinary] ${isCloudinaryReady() ? 'Configured' : 'Not configured — URL/path images only'}`,
     )

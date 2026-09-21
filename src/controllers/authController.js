@@ -34,11 +34,12 @@ export const refresh = asyncHandler(async (req, res) => {
 })
 
 export const logout = asyncHandler(async (_req, res) => {
+  const cookieOpts = refreshCookieOptions()
   res.clearCookie(REFRESH_COOKIE, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: refreshCookieOptions().secure,
-    path: '/api/auth',
+    httpOnly: cookieOpts.httpOnly,
+    sameSite: cookieOpts.sameSite,
+    secure: cookieOpts.secure,
+    path: cookieOpts.path,
   })
   res.json({ success: true, data: { loggedOut: true } })
 })

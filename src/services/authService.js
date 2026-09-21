@@ -62,7 +62,7 @@ export async function refreshAdminSession(refreshToken) {
 export function refreshCookieOptions() {
   return {
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: env.cookieSameSite,
     secure: env.cookieSecure,
     path: '/api/auth',
     maxAge: 7 * 24 * 60 * 60 * 1000,
