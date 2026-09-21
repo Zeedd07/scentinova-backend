@@ -140,10 +140,24 @@ async function seed() {
   for (const data of PRODUCTS) {
     const existing = await Product.findOne({ slug: data.slug })
     if (existing) {
-      Object.assign(existing, data)
+      // Keep Cloudinary media if already uploaded — seed defaults are local /products paths.
+      const preserveMedia =
+        existing.imagePublicId ||
+        (Array.isArray(existing.galleryPublicIds) && existing.galleryPublicIds.length > 0) ||
+        (typeof existing.image === 'string' && existing.image.includes('res.cloudinary.com'))
+
+      const next = { ...data }
+      if (preserveMedia) {
+        delete next.image
+        delete next.gallery
+        delete next.imagePublicId
+        delete next.galleryPublicIds
+      }
+
+      Object.assign(existing, next)
       await existing.save()
       updated += 1
-      console.log(`  updated: ${data.name}`)
+      console.log(`  updated: ${data.name}${preserveMedia ? ' (kept Cloudinary media)' : ''}`)
     } else {
       await Product.create(data)
       created += 1
