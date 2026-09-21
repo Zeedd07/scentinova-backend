@@ -48,7 +48,8 @@ export function createApp() {
           callback(null, true)
           return
         }
-        callback(new Error(`CORS blocked for origin: ${origin}`))
+        // Do not throw — throwing becomes a 500 and hides CORS as INTERNAL_ERROR
+        callback(null, false)
       },
       credentials: true,
     }),
