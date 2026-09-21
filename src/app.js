@@ -34,6 +34,7 @@ export function createApp() {
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean),
+      'https://scentinova.vercel.app',
       'http://localhost:5178',
       'http://localhost:5173',
       'http://127.0.0.1:5178',
