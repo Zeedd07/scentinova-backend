@@ -10,13 +10,22 @@ const paymentSchema = new mongoose.Schema(
     },
     orderNumber: { type: String, required: true, index: true },
     provider: { type: String, default: 'razorpay' },
-    razorpayOrderId: { type: String, default: null, index: true },
-    razorpayPaymentId: { type: String, default: null, unique: true, sparse: true },
+    razorpayOrderId: { type: String },
+    razorpayPaymentId: { type: String },
     amountPaise: { type: Number, required: true },
     currency: { type: String, default: 'INR' },
     status: {
       type: String,
-      enum: ['CREATED', 'AUTHORIZED', 'CAPTURED', 'FAILED', 'REFUNDED', 'PARTIALLY_REFUNDED'],
+      enum: [
+        'CREATED',
+        'AUTHORIZED',
+        'CAPTURED',
+        'PENDING',
+        'PAID',
+        'FAILED',
+        'REFUNDED',
+        'PARTIALLY_REFUNDED',
+      ],
       default: 'CREATED',
     },
     method: { type: String, default: null },
@@ -30,5 +39,14 @@ const paymentSchema = new mongoose.Schema(
 )
 
 paymentSchema.index({ razorpayOrderId: 1 }, { sparse: true })
+paymentSchema.index(
+  { razorpayPaymentId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      razorpayPaymentId: { $exists: true, $type: 'string' },
+    },
+  },
+)
 
 export const Payment = mongoose.model('Payment', paymentSchema)

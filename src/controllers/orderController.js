@@ -21,7 +21,17 @@ export const adminUpdateStatus = asyncHandler(async (req, res) => {
   const order = await orderService.updateOrderStatus(req.params.id, req.body.status, {
     admin: req.admin,
     note: req.body.note,
+    customerMessage: req.body.customerMessage,
     shipping: req.body.shipping,
+  })
+  res.json({ success: true, data: { order } })
+})
+
+export const adminAddUpdate = asyncHandler(async (req, res) => {
+  const order = await orderService.addOrderUpdate(req.params.id, {
+    admin: req.admin,
+    note: req.body.note,
+    customerMessage: req.body.customerMessage,
   })
   res.json({ success: true, data: { order } })
 })
@@ -38,6 +48,14 @@ export const adminRefund = asyncHandler(async (req, res) => {
     amountPaise: req.body.amountPaise,
     reason: req.body.reason,
     admin: req.admin,
+  })
+  res.json({ success: true, data: { order } })
+})
+
+export const adminMarkCodPaid = asyncHandler(async (req, res) => {
+  const order = await orderService.markCodPaymentReceived(req.params.id, {
+    admin: req.admin,
+    note: req.body.note,
   })
   res.json({ success: true, data: { order } })
 })

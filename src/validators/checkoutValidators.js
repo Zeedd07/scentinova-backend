@@ -6,12 +6,29 @@ const cartItemSchema = z.object({
   unitPricePaise: z.coerce.number().int().optional(),
 })
 
+/** Trimmed free text; blank becomes null. */
+function optionalText(max) {
+  return z
+    .string()
+    .max(max)
+    .optional()
+    .nullable()
+    .transform((v) => (v && v.trim() ? v.trim() : null))
+}
+
+const paymentMethodSchema = z
+  .enum(['PREPAID', 'COD', 'prepaid', 'cod'])
+  .optional()
+  .transform((v) => (v ? String(v).toUpperCase() : 'PREPAID'))
+
 export const checkoutQuoteSchema = z.object({
   items: z.array(cartItemSchema).min(1),
+  paymentMethod: paymentMethodSchema,
   expectedTotalPaise: z.coerce.number().int().optional(),
 })
 
 export const checkoutCreateSchema = z.object({
+  paymentMethod: paymentMethodSchema,
   customer: z.object({
     name: z.string().min(1, 'Name is required.'),
     email: z.string().email('Enter a valid email address.'),
@@ -56,7 +73,8 @@ export const adminOrderStatusSchema = z.object({
     'CANCELLED',
     'REFUND_PENDING',
   ]),
-  note: z.string().optional().nullable(),
+  note: optionalText(500),
+  customerMessage: optionalText(280),
   shipping: z
     .object({
       carrier: z.string().optional(),
@@ -65,6 +83,16 @@ export const adminOrderStatusSchema = z.object({
     })
     .optional(),
 })
+
+export const adminOrderUpdateSchema = z
+  .object({
+    customerMessage: optionalText(280),
+    note: optionalText(500),
+  })
+  .refine((v) => v.customerMessage || v.note, {
+    message: 'Write a customer message or an internal note.',
+    path: ['customerMessage'],
+  })
 
 export const adminShippingSchema = z.object({
   carrier: z.string().min(1),

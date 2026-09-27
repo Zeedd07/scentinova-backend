@@ -1,4 +1,5 @@
 import { AuditLog } from '../models/AuditLog.js'
+import { logger } from '../utils/logger.js'
 
 export async function writeAudit({
   actorType,
@@ -21,7 +22,8 @@ export async function writeAudit({
       ip,
       userAgent,
     })
-  } catch {
+  } catch (err) {
     // Never fail the main request because audit write failed
+    logger.error('Audit write failed', { action, entityType, message: err?.message })
   }
 }

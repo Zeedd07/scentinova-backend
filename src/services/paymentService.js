@@ -7,7 +7,7 @@ import { ApiError } from '../utils/ApiError.js'
 import * as razorpayService from './razorpayService.js'
 import { commitReservations, releaseReservations } from './inventoryService.js'
 import { writeAudit } from './auditService.js'
-import { notify, NotificationEvent } from './emailService.js'
+import { notify, NotificationEvent, sendOrderConfirmationEmailSafe } from './emailService.js'
 import { canTransition } from '../utils/orderStatus.js'
 import { logger } from '../utils/logger.js'
 import { toCustomerOrder } from './checkoutService.js'
@@ -32,6 +32,8 @@ export async function confirmPaidOrder({
         orderNumber: order.orderNumber,
       })
     }
+    // Retry confirmation email if prior send failed — never duplicates when already sent
+    await sendOrderConfirmationEmailSafe(order)
     return { order, alreadyConfirmed: true }
   }
 
@@ -56,6 +58,7 @@ export async function confirmPaidOrder({
   await commitReservations(order._id)
 
   order.status = 'CONFIRMED'
+  order.paymentMethod = order.paymentMethod || 'PREPAID'
   order.payment = {
     ...(order.payment?.toObject?.() || order.payment || {}),
     provider: 'razorpay',
@@ -69,7 +72,7 @@ export async function confirmPaidOrder({
     failedAt: null,
     failureReason: null,
   }
-  order.paymentStatus = 'paid'
+  order.paymentStatus = 'PAID'
   order.inventoryCommitted = true
   order.stockDecremented = true
   order.statusHistory.push({
@@ -118,15 +121,16 @@ export async function confirmPaidOrder({
   await notify(NotificationEvent.PAYMENT_SUCCESS, {
     orderNumber: order.orderNumber,
     email: order.customerSnapshot?.email || order.customer?.email,
+    paymentMethod: order.paymentMethod || 'PREPAID',
+    paymentStatus: 'PAID',
+    convenienceFeePaise: order.pricing?.convenienceFeePaise,
+    codFeePaise: order.pricing?.codFeePaise || 0,
     totalPaise: order.pricing?.totalPaise,
     status: order.status,
   })
-  await notify(NotificationEvent.ORDER_CONFIRMED, {
-    orderNumber: order.orderNumber,
-    email: order.customerSnapshot?.email || order.customer?.email,
-    totalPaise: order.pricing?.totalPaise,
-    status: order.status,
-  })
+
+  // Only after backend payment verification / capture — email never fails the order
+  await sendOrderConfirmationEmailSafe(order)
 
   return { order, alreadyConfirmed: false }
 }
@@ -139,6 +143,14 @@ export async function verifyCheckoutPayment({
 }) {
   const order = await Order.findOne({ orderNumber })
   if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', 'Order not found.')
+
+  if (order.paymentMethod === 'COD' || order.payment?.provider === 'cod') {
+    throw new ApiError(
+      400,
+      'PAYMENT_VERIFICATION_FAILED',
+      'COD orders do not use Razorpay verification.',
+    )
+  }
 
   if (order.payment?.razorpayOrderId && order.payment.razorpayOrderId !== razorpayOrderId) {
     throw new ApiError(400, 'PAYMENT_VERIFICATION_FAILED', 'Razorpay order mismatch.')

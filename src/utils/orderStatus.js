@@ -41,6 +41,24 @@ export function canTransition(from, to) {
   return allowed.includes(to)
 }
 
+/** Fulfilment statuses an admin sets by hand; payment and refund states have their own flows. */
+export const ADMIN_SETTABLE_STATUSES = [
+  'PROCESSING',
+  'PACKED',
+  'SHIPPED',
+  'OUT_FOR_DELIVERY',
+  'DELIVERED',
+  'CANCELLED',
+]
+
+export function adminNextStatuses(order) {
+  const raw = String(order?.status || '')
+  const current = ORDER_TRANSITIONS[raw]
+    ? raw
+    : mapLegacyStatus(raw, order?.paymentStatus || order?.payment?.status)
+  return (ORDER_TRANSITIONS[current] || []).filter((s) => ADMIN_SETTABLE_STATUSES.includes(s))
+}
+
 /** Map legacy statuses from pre-prepaid orders. */
 export function mapLegacyStatus(legacyStatus, paymentStatus) {
   const s = String(legacyStatus || '').toLowerCase()

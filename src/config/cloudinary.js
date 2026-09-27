@@ -40,5 +40,8 @@ export function isCloudinaryReady() {
 }
 
 export const CLOUDINARY_PRODUCT_FOLDER = 'scentinova/products'
+export const CLOUDINARY_NOTE_FOLDER = 'scentinova/notes'
+export const CLOUDINARY_BACKGROUND_FOLDER = 'scentinova/product-backgrounds'
+export const CLOUDINARY_MEDIA_FOLDER = 'scentinova/media'
 
 export { cloudinary }

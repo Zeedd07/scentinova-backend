@@ -10,6 +10,7 @@ import {
 import { ApiError } from '../utils/ApiError.js'
 import { Product } from '../models/Product.js'
 import { Order } from '../models/Order.js'
+import { MediaAsset } from '../models/MediaAsset.js'
 
 export { isCloudinaryReady }
 
@@ -58,6 +59,34 @@ export function buildDeliveryUrl(publicId, { width } = {}) {
         ...(width ? { width, crop: 'limit' } : {}),
       },
     ],
+  })
+}
+
+/** Cropped, optimized delivery URL (e.g. 1:1 note thumbnails). */
+export function buildCroppedUrl(publicId, { width = 320, aspectRatio = '1:1' } = {}) {
+  const cld = getCloudinary()
+  return cld.url(publicId, {
+    secure: true,
+    transformation: [
+      {
+        crop: 'fill',
+        gravity: 'auto',
+        aspect_ratio: aspectRatio,
+        width,
+        quality: 'auto',
+        fetch_format: 'auto',
+      },
+    ],
+  })
+}
+
+/** Original-quality URL that makes the browser download straight from Cloudinary. */
+export function buildAttachmentUrl(publicId, filename) {
+  const cld = getCloudinary()
+  const name = sanitizePublicIdPart(filename || publicId.split('/').pop())
+  return cld.url(publicId, {
+    secure: true,
+    flags: `attachment:${name}`,
   })
 }
 
@@ -134,6 +163,51 @@ export async function uploadProductImage(file, { slug, role = 'primary' } = {}) 
   }
 }
 
+/**
+ * Upload a validated Multer file to an exact public_id (no overwrite).
+ * Caller is responsible for choosing a public_id that is not already taken.
+ */
+export async function uploadImageToPublicId(file, publicId, { tags = [] } = {}) {
+  assertValidImageFile(file)
+  if (!isCloudinaryReady()) {
+    throw new ApiError(501, 'CLOUDINARY_UNAVAILABLE', 'Cloudinary is not configured on the server.')
+  }
+  try {
+    const result = await uploadBuffer(file.buffer, {
+      public_id: publicId,
+      resource_type: 'image',
+      overwrite: false,
+      unique_filename: false,
+      use_filename: false,
+      ...(tags.length ? { tags } : {}),
+    })
+    if (result.existing) {
+      throw new ApiError(409, 'DUPLICATE', 'An image with that name already exists on Cloudinary.')
+    }
+    return mapUploadResult(result)
+  } catch (err) {
+    if (err instanceof ApiError) throw err
+    throw new ApiError(502, 'UPLOAD_FAILED', 'Upload failed. Please try again.')
+  }
+}
+
+/** Destroy an asset; throws when Cloudinary does not confirm the deletion. */
+export async function destroyCloudinaryAssetStrict(publicId) {
+  if (!isCloudinaryReady()) {
+    throw new ApiError(501, 'CLOUDINARY_UNAVAILABLE', 'Cloudinary is not configured on the server.')
+  }
+  let result
+  try {
+    result = await getCloudinary().uploader.destroy(publicId, { resource_type: 'image', invalidate: true })
+  } catch {
+    throw new ApiError(502, 'CLOUDINARY_DELETE_FAILED', 'Cloudinary could not delete this image. Please try again.')
+  }
+  if (result?.result !== 'ok' && result?.result !== 'not found') {
+    throw new ApiError(502, 'CLOUDINARY_DELETE_FAILED', 'Cloudinary could not delete this image. Please try again.')
+  }
+  return { deleted: true, result: result.result }
+}
+
 export async function deleteCloudinaryAsset(publicId) {
   if (!publicId || !isCloudinaryReady()) return { deleted: false }
   try {
@@ -158,13 +232,14 @@ export async function isPublicIdReferenced(publicId, { excludeProductId } = {}) 
     productFilter._id = { $ne: excludeProductId }
   }
 
-  const [inProduct, inOrder] = await Promise.all([
+  const [inProduct, inOrder, inLibrary] = await Promise.all([
     Product.exists(productFilter),
     Order.exists({ 'items.image': { $regex: publicId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') } }),
+    MediaAsset.exists({ publicId }),
   ])
 
   // Also match delivery/secure URLs that contain the public id path
-  if (inProduct || inOrder) return true
+  if (inProduct || inOrder || inLibrary) return true
 
   const urlHit = await Order.exists({
     'items.image': { $regex: publicId },

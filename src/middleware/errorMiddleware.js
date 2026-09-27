@@ -35,7 +35,10 @@ export function errorMiddleware(err, _req, res, _next) {
   if (err.code === 11000) {
     status = 409
     code = 'DUPLICATE'
-    message = 'A record with that value already exists.'
+    const fields = err.keyPattern ? Object.keys(err.keyPattern).join(', ') : null
+    message = fields
+      ? `A record with that ${fields} already exists.`
+      : 'A record with that value already exists.'
   }
 
   if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {

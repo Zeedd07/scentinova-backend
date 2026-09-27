@@ -34,6 +34,22 @@ export const orderLimiter = rateLimit({
   },
 })
 
+/** Guest order lookups — only failed attempts count, so refreshes never lock a customer out. */
+export const trackLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  skipSuccessfulRequests: true,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'RATE_LIMITED',
+      message: 'Too many tracking attempts. Please wait a few minutes and try again.',
+    },
+  },
+})
+
 export const analyticsLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 300,

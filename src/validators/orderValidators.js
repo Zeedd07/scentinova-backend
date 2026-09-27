@@ -25,6 +25,23 @@ export const orderCreateSchema = z.object({
   customerNote: z.string().optional().nullable(),
 })
 
+/** Public tracking lookup — order number plus the checkout token or emailed tracking code. */
+export const trackOrderSchema = z
+  .object({
+    orderNumber: z
+      .string()
+      .trim()
+      .min(1, 'Please enter your order number.')
+      .max(40, 'Enter a valid order number.')
+      .regex(/^[A-Za-z0-9-]+$/, 'Enter a valid order number.'),
+    token: z
+      .string()
+      .trim()
+      .min(1, 'Please enter your tracking code.')
+      .max(128, 'Enter a valid tracking code.'),
+  })
+  .strict()
+
 export const orderStatusSchema = z.object({
   status: z.enum(['new', 'confirmed', 'packed', 'shipped', 'delivered', 'cancelled']),
 })

@@ -9,6 +9,52 @@ const notesSchema = new mongoose.Schema(
   { _id: false },
 )
 
+/**
+ * Per-product note image override. Notes themselves stay plain strings in `notes`;
+ * entries are matched by tier + normalized note name.
+ */
+const noteImageSchema = new mongoose.Schema(
+  {
+    tier: { type: String, enum: ['TOP', 'HEART', 'BASE'], required: true },
+    noteKey: { type: String, required: true, trim: true, lowercase: true },
+    assetId: { type: mongoose.Schema.Types.ObjectId, ref: 'MediaAsset', default: null },
+    alt: { type: String, default: null, trim: true, maxlength: 200 },
+    /** Suppress the global default image for this note on this product. */
+    hideImage: { type: Boolean, default: false },
+  },
+  { _id: false },
+)
+
+const feeAmountSchema = (extra = {}) =>
+  new mongoose.Schema(
+    {
+      enabled: { type: Boolean, default: false },
+      amountPaise: { type: Number, default: 0, min: 0 },
+      ...extra,
+    },
+    { _id: false },
+  )
+
+/**
+ * Checkout charges configured on this product (paise). Missing fields on legacy
+ * documents resolve to "no fee, COD allowed" via defaults.
+ */
+const productFeesSchema = new mongoose.Schema(
+  {
+    convenience: {
+      type: feeAmountSchema({
+        applyToPrepaid: { type: Boolean, default: true },
+        applyToCod: { type: Boolean, default: true },
+      }),
+      default: () => ({}),
+    },
+    cod: { type: feeAmountSchema(), default: () => ({}) },
+    shipping: { type: feeAmountSchema(), default: () => ({}) },
+    codAllowed: { type: Boolean, default: true },
+  },
+  { _id: false },
+)
+
 const productSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -25,6 +71,7 @@ const productSchema = new mongoose.Schema(
     pricePaise: { type: Number, required: true, min: 0 },
     price: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'INR' },
+    fees: { type: productFeesSchema, default: () => ({}) },
 
     size: { type: String, default: '50ML' },
     concentration: { type: String, default: 'Parfum' },
@@ -40,6 +87,9 @@ const productSchema = new mongoose.Schema(
 
     notes: { type: notesSchema, default: () => ({ top: [], heart: [], base: [] }) },
     descriptors: { type: [String], default: [] },
+    noteImages: { type: [noteImageSchema], default: [] },
+    /** Admin-only AI background / reference image (MediaAsset type PRODUCT_BACKGROUND). */
+    backgroundAssetId: { type: mongoose.Schema.Types.ObjectId, ref: 'MediaAsset', default: null },
 
     stock: { type: Number, default: 0, min: 0 },
     trackInventory: { type: Boolean, default: true },
@@ -55,6 +105,8 @@ productSchema.index({ featured: 1 })
 productSchema.index({ active: 1 })
 productSchema.index({ createdAt: -1 })
 productSchema.index({ imagePublicId: 1 })
+productSchema.index({ 'noteImages.assetId': 1 })
+productSchema.index({ backgroundAssetId: 1 })
 productSchema.index({ sku: 1 }, { unique: true, sparse: true })
 
 productSchema.set('toJSON', {

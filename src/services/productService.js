@@ -9,6 +9,23 @@ import {
   safeDeleteUnreferencedAsset,
 } from './imageService.js'
 import { rupeesToPaise, paiseToRupees } from '../utils/money.js'
+import {
+  adminProductMedia,
+  assertProductMediaRefs,
+  pruneNoteImages,
+  resolveNoteMedia,
+} from './mediaService.js'
+
+/** Admin-only media references and fee configuration never leave the admin API. */
+function toPublic(product) {
+  const { noteImages: _noteImages, backgroundAssetId: _bg, fees: _fees, ...rest } = product
+  return rest
+}
+
+async function withAdminMedia(productDoc) {
+  const json = withMediaUrls(productDoc.toJSON())
+  return { ...json, media: await adminProductMedia(productDoc) }
+}
 
 function syncMoneyFields(input) {
   const out = { ...input }
@@ -70,20 +87,21 @@ export async function listPublicProducts(query) {
   ])
 
   return {
-    products: products.map((p) => withMediaUrls(p.toJSON())),
+    products: products.map((p) => toPublic(withMediaUrls(p.toJSON()))),
     meta: paginationMeta(page, limit, total),
   }
 }
 
 export async function listFeaturedProducts() {
   const products = await Product.find({ active: true, featured: true }).sort({ name: 1 })
-  return products.map((p) => withMediaUrls(p.toJSON()))
+  return products.map((p) => toPublic(withMediaUrls(p.toJSON())))
 }
 
 export async function getProductBySlug(slug) {
   const product = await Product.findOne({ slug, active: true })
   if (!product) throw new ApiError(404, 'PRODUCT_NOT_FOUND', 'Product not found.')
-  return withMediaUrls(product.toJSON())
+  const noteMedia = await resolveNoteMedia(product)
+  return { ...toPublic(withMediaUrls(product.toJSON())), noteMedia }
 }
 
 export async function listAdminProducts(query) {
@@ -106,7 +124,7 @@ export async function listAdminProducts(query) {
 export async function getAdminProduct(id) {
   const product = await Product.findById(id)
   if (!product) throw new ApiError(404, 'PRODUCT_NOT_FOUND', 'Product not found.')
-  return withMediaUrls(product.toJSON())
+  return withAdminMedia(product)
 }
 
 export async function createProduct(input) {
@@ -119,26 +137,27 @@ export async function createProduct(input) {
     ? input.galleryPublicIds
     : []
 
-  try {
-    const money = syncMoneyFields(input)
-    if (money.pricePaise == null) {
-      throw new ApiError(400, 'VALIDATION_ERROR', 'Price is required.')
-    }
-    const product = await Product.create({
-      ...input,
-      ...money,
-      slug,
-      sku: input.sku || slug.toUpperCase(),
-      gallery,
-      imagePublicId: input.imagePublicId || null,
-      galleryPublicIds,
-      trackInventory: input.trackInventory !== false,
-      allowBackorder: Boolean(input.allowBackorder),
-    })
-    return product.toJSON()
-  } catch (err) {
-    throw err
+  const noteImages = pruneNoteImages(input.notes, input.noteImages || [])
+  await assertProductMediaRefs({ noteImages, backgroundAssetId: input.backgroundAssetId })
+
+  const money = syncMoneyFields(input)
+  if (money.pricePaise == null) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Price is required.')
   }
+  const product = await Product.create({
+    ...input,
+    ...money,
+    slug,
+    sku: input.sku || slug.toUpperCase(),
+    gallery,
+    imagePublicId: input.imagePublicId || null,
+    galleryPublicIds,
+    noteImages,
+    backgroundAssetId: input.backgroundAssetId || null,
+    trackInventory: input.trackInventory !== false,
+    allowBackorder: Boolean(input.allowBackorder),
+  })
+  return withAdminMedia(product)
 }
 
 export async function updateProduct(id, input) {
@@ -178,8 +197,21 @@ export async function updateProduct(id, input) {
     'sku',
     'trackInventory',
     'allowBackorder',
+    'backgroundAssetId',
+    'fees',
   ]
-  for (const key of fields) {
+
+  if (input.noteImages !== undefined || input.notes !== undefined) {
+    const notes = input.notes ?? product.notes?.toObject?.() ?? product.notes
+    const current = (product.noteImages || []).map((n) => (n.toObject ? n.toObject() : n))
+    input = { ...input, noteImages: pruneNoteImages(notes, input.noteImages ?? current) }
+  }
+  await assertProductMediaRefs({
+    noteImages: input.noteImages,
+    backgroundAssetId: input.backgroundAssetId,
+  })
+
+  for (const key of [...fields, 'noteImages']) {
     if (input[key] !== undefined) product[key] = input[key]
   }
 
@@ -212,7 +244,8 @@ export async function updateProduct(id, input) {
     }
   }
 
-  return product.toJSON()
+  // Note images / backgrounds are shared library assets: never deleted here.
+  return withAdminMedia(product)
 }
 
 export async function archiveProduct(id) {
@@ -223,7 +256,8 @@ export async function archiveProduct(id) {
   product.active = false
   await product.save()
 
-  // Do NOT delete Cloudinary assets on archive — orders may keep image URL snapshots.
+  // Do NOT delete Cloudinary assets on archive — orders may keep image URL snapshots,
+  // and note/background library assets may be shared with other products.
 
   return {
     product: product.toJSON(),

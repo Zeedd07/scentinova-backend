@@ -2,7 +2,7 @@ import { Order } from '../models/Order.js'
 import { Shipment } from '../models/Shipment.js'
 import { Payment } from '../models/Payment.js'
 import { ApiError } from '../utils/ApiError.js'
-import { canTransition, mapLegacyStatus } from '../utils/orderStatus.js'
+import { adminNextStatuses, canTransition, mapLegacyStatus } from '../utils/orderStatus.js'
 import { writeAudit } from './auditService.js'
 import { notify, NotificationEvent } from './emailService.js'
 import { releaseReservations } from './inventoryService.js'
@@ -22,6 +22,7 @@ function normalizeOrderView(order) {
       phone: o.customerSnapshot.phone,
     }
   }
+  o.allowedNextStatuses = adminNextStatuses(o)
   return o
 }
 
@@ -70,7 +71,11 @@ export async function getAdminOrder(id) {
   }
 }
 
-export async function updateOrderStatus(id, status, { admin, note, shipping } = {}) {
+export async function updateOrderStatus(
+  id,
+  status,
+  { admin, note, customerMessage, shipping } = {},
+) {
   const order = await Order.findById(id)
   if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', 'Order not found.')
 
@@ -81,8 +86,14 @@ export async function updateOrderStatus(id, status, { admin, note, shipping } = 
     order.status = current
   }
 
-  // Admin must never mark paid manually
-  if (status === 'CONFIRMED' && order.payment?.status !== 'CAPTURED') {
+  // Admin must never mark prepaid orders confirmed without Razorpay capture
+  const isCod = order.paymentMethod === 'COD' || order.payment?.provider === 'cod'
+  if (
+    status === 'CONFIRMED' &&
+    !isCod &&
+    order.payment?.status !== 'CAPTURED' &&
+    order.payment?.status !== 'PAID'
+  ) {
     throw new ApiError(
       400,
       'INVALID_ORDER_STATUS',
@@ -90,7 +101,16 @@ export async function updateOrderStatus(id, status, { admin, note, shipping } = 
     )
   }
 
-  if (current !== status && !canTransition(current, status)) {
+  // Re-applying the current status would re-stamp dates and re-send customer emails
+  if (current === status) {
+    throw new ApiError(
+      400,
+      'INVALID_ORDER_STATUS',
+      `Order is already ${status}. Post an update instead to message the customer.`,
+    )
+  }
+
+  if (!canTransition(current, status)) {
     throw new ApiError(
       400,
       'INVALID_ORDER_STATUS',
@@ -170,6 +190,7 @@ export async function updateOrderStatus(id, status, { admin, note, shipping } = 
     changedBy: admin?.email || admin?.id || null,
     source: 'ADMIN',
     note: note || null,
+    customerMessage: customerMessage || null,
     createdAt: new Date(),
   })
   await order.save()
@@ -215,6 +236,34 @@ export async function updateOrderStatus(id, status, { admin, note, shipping } = 
   return normalizeOrderView(order)
 }
 
+/** Timeline entry without a status change, e.g. a delivery delay notice. */
+export async function addOrderUpdate(id, { admin, note, customerMessage } = {}) {
+  const order = await Order.findById(id)
+  if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', 'Order not found.')
+
+  order.statusHistory.push({
+    previousStatus: order.status,
+    status: order.status,
+    changedBy: admin?.email || admin?.id || null,
+    source: 'ADMIN',
+    note: note || null,
+    customerMessage: customerMessage || null,
+    createdAt: new Date(),
+  })
+  await order.save()
+
+  await writeAudit({
+    actorType: 'ADMIN',
+    actorId: admin?._id?.toString() || admin?.id || null,
+    action: 'ORDER_UPDATE_POSTED',
+    entityType: 'Order',
+    entityId: order._id,
+    metadata: { orderNumber: order.orderNumber, customerVisible: Boolean(customerMessage) },
+  })
+
+  return normalizeOrderView(order)
+}
+
 export async function updateShipping(id, shipping, { admin } = {}) {
   const order = await Order.findById(id)
   if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', 'Order not found.')
@@ -254,9 +303,106 @@ export async function updateShipping(id, shipping, { admin } = {}) {
   return normalizeOrderView(order)
 }
 
+export async function markCodPaymentReceived(id, { admin, note } = {}) {
+  const order = await Order.findById(id)
+  if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', 'Order not found.')
+
+  const isCod = order.paymentMethod === 'COD' || order.payment?.provider === 'cod'
+  if (!isCod) {
+    throw new ApiError(
+      400,
+      'INVALID_PAYMENT_ACTION',
+      'Only COD orders can be marked as cash received.',
+    )
+  }
+
+  const currentPay = String(order.payment?.status || order.paymentStatus || '').toUpperCase()
+  if (currentPay === 'PAID' || currentPay === 'CAPTURED') {
+    return normalizeOrderView(order)
+  }
+  if (currentPay === 'REFUNDED' || currentPay === 'PARTIALLY_REFUNDED') {
+    throw new ApiError(
+      400,
+      'INVALID_PAYMENT_ACTION',
+      'Cannot mark a refunded COD order as paid.',
+    )
+  }
+  if (currentPay && currentPay !== 'PENDING' && currentPay !== 'CREATED') {
+    throw new ApiError(
+      400,
+      'INVALID_PAYMENT_ACTION',
+      `Cannot mark COD payment received from status ${order.payment?.status}.`,
+    )
+  }
+
+  const receivedAt = new Date()
+  order.payment = {
+    ...(order.payment?.toObject?.() || order.payment || {}),
+    provider: 'cod',
+    status: 'PAID',
+    method: 'COD',
+    amountPaise: order.pricing?.totalPaise || order.payment?.amountPaise,
+    currency: 'INR',
+    receivedAt,
+    capturedAt: receivedAt,
+  }
+  order.paymentStatus = 'PAID'
+  order.paymentMethod = 'COD'
+  // Never invent Razorpay IDs for COD
+  if (order.payment.razorpayOrderId == null) delete order.payment.razorpayOrderId
+  if (order.payment.razorpayPaymentId == null) delete order.payment.razorpayPaymentId
+
+  order.statusHistory.push({
+    previousStatus: order.status,
+    status: order.status,
+    changedBy: admin?.email || admin?.id || null,
+    source: 'ADMIN',
+    note: note || 'COD payment marked as received',
+    createdAt: receivedAt,
+  })
+  await order.save()
+
+  await Payment.findOneAndUpdate(
+    { orderId: order._id, provider: 'cod' },
+    {
+      $set: {
+        orderNumber: order.orderNumber,
+        provider: 'cod',
+        status: 'PAID',
+        method: 'COD',
+        capturedAt: receivedAt,
+        amountPaise: order.pricing?.totalPaise || order.payment?.amountPaise,
+        currency: 'INR',
+      },
+      $unset: { razorpayOrderId: '', razorpayPaymentId: '' },
+    },
+    { upsert: true },
+  )
+
+  await writeAudit({
+    actorType: 'ADMIN',
+    actorId: admin?._id?.toString() || admin?.id || null,
+    action: 'COD_PAYMENT_RECEIVED',
+    entityType: 'Order',
+    entityId: order._id,
+    metadata: {
+      orderNumber: order.orderNumber,
+      amountPaise: order.pricing?.totalPaise,
+      note: note || null,
+    },
+  })
+
+  return normalizeOrderView(order)
+}
+
 export async function refundOrder(id, { amountPaise, reason, admin } = {}) {
   const order = await Order.findById(id)
   if (!order) throw new ApiError(404, 'ORDER_NOT_FOUND', 'Order not found.')
+
+  const isCod = order.paymentMethod === 'COD' || order.payment?.provider === 'cod'
+  if (isCod) {
+    return refundCodOrder(order, { amountPaise, reason, admin })
+  }
 
   if (order.payment?.status !== 'CAPTURED' || !order.payment?.razorpayPaymentId) {
     throw new ApiError(400, 'REFUND_NOT_ALLOWED', 'Only captured payments can be refunded.')
@@ -309,7 +455,7 @@ export async function refundOrder(id, { amountPaise, reason, admin } = {}) {
   if (refund.status === 'processed') {
     order.status = 'REFUNDED'
     order.payment.status = refundAmount >= maxPaise ? 'REFUNDED' : 'PARTIALLY_REFUNDED'
-    order.paymentStatus = 'refunded'
+    order.paymentStatus = 'REFUNDED'
     order.statusHistory.push({
       previousStatus: 'REFUND_PENDING',
       status: 'REFUNDED',
@@ -332,6 +478,8 @@ export async function refundOrder(id, { amountPaise, reason, admin } = {}) {
   await notify(NotificationEvent.REFUND_INITIATED, {
     orderNumber: order.orderNumber,
     email: order.customerSnapshot?.email || order.customer?.email,
+    paymentMethod: order.paymentMethod || 'PREPAID',
+    paymentStatus: order.paymentStatus,
     totalPaise: refundAmount,
     status: order.status,
   })
@@ -339,11 +487,116 @@ export async function refundOrder(id, { amountPaise, reason, admin } = {}) {
   return normalizeOrderView(order)
 }
 
-/** Legacy public create — blocked in favor of prepaid checkout. */
+/**
+ * Internal COD refund / payment adjustment — never calls Razorpay.
+ */
+async function refundCodOrder(order, { amountPaise, reason, admin } = {}) {
+  const maxPaise = order.pricing?.totalPaise || order.payment?.amountPaise || 0
+  const refundAmount = amountPaise != null ? Number(amountPaise) : maxPaise
+  if (!Number.isInteger(refundAmount) || refundAmount < 100 || refundAmount > maxPaise) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid refund amount.')
+  }
+  if (order.status === 'REFUNDED') {
+    throw new ApiError(400, 'REFUND_NOT_ALLOWED', 'Order is already fully refunded.')
+  }
+
+  const payStatus = String(order.payment?.status || '').toUpperCase()
+  const prev = order.status
+  const full = refundAmount >= maxPaise
+
+  if (payStatus === 'PENDING' || payStatus === 'CREATED') {
+    // Never collected — cancel / close without inventing a Razorpay refund
+    order.status = 'CANCELLED'
+    order.payment = {
+      ...(order.payment?.toObject?.() || order.payment || {}),
+      provider: 'cod',
+      status: 'FAILED',
+      failureReason: reason || 'COD order cancelled before collection',
+    }
+    order.paymentStatus = 'FAILED'
+    order.statusHistory.push({
+      previousStatus: prev,
+      status: 'CANCELLED',
+      changedBy: admin?.email || null,
+      source: 'ADMIN',
+      note: reason || 'COD order cancelled (payment never collected)',
+      createdAt: new Date(),
+    })
+  } else {
+    order.status = 'REFUNDED'
+    order.payment = {
+      ...(order.payment?.toObject?.() || order.payment || {}),
+      provider: 'cod',
+      status: full ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+    }
+    order.paymentStatus = full ? 'REFUNDED' : 'PARTIALLY_REFUNDED'
+    order.statusHistory.push({
+      previousStatus: prev,
+      status: 'REFUNDED',
+      changedBy: admin?.email || null,
+      source: 'ADMIN',
+      note: reason || 'Internal COD refund recorded',
+      createdAt: new Date(),
+    })
+  }
+
+  await order.save()
+
+  await Payment.findOneAndUpdate(
+    { orderId: order._id, provider: 'cod' },
+    {
+      $inc: { refundedPaise: refundAmount },
+      $set: {
+        status:
+          payStatus === 'PENDING' || payStatus === 'CREATED'
+            ? 'FAILED'
+            : full
+              ? 'REFUNDED'
+              : 'PARTIALLY_REFUNDED',
+      },
+    },
+    { upsert: true },
+  )
+
+  await writeAudit({
+    actorType: 'ADMIN',
+    actorId: admin?._id?.toString() || null,
+    action: 'COD_REFUND_RECORDED',
+    entityType: 'Order',
+    entityId: order._id,
+    metadata: {
+      amountPaise: refundAmount,
+      reason: reason || null,
+      pricingSnapshot: {
+        subtotalPaise: order.pricing?.subtotalPaise,
+        shippingPaise: order.pricing?.shippingPaise,
+        codFeePaise: order.pricing?.codFeePaise,
+        convenienceFeePaise: order.pricing?.convenienceFeePaise,
+        discountPaise: order.pricing?.discountPaise,
+        totalPaise: order.pricing?.totalPaise,
+      },
+    },
+  })
+
+  await notify(NotificationEvent.REFUND_INITIATED, {
+    orderNumber: order.orderNumber,
+    email: order.customerSnapshot?.email || order.customer?.email,
+    paymentMethod: 'COD',
+    paymentStatus: order.paymentStatus,
+    codFeePaise: order.pricing?.codFeePaise,
+    convenienceFeePaise: order.pricing?.convenienceFeePaise,
+    totalPaise: refundAmount,
+    status: order.status,
+  })
+
+  return normalizeOrderView(order)
+}
+
+/** Legacy public create — blocked in favor of prepaid/COD checkout. */
 export async function createOrder() {
   throw new ApiError(
     410,
     'GONE',
-    'Direct order creation is disabled. Use prepaid checkout.',
+    'Direct order creation is disabled. Use checkout.',
   )
 }

@@ -64,15 +64,15 @@ export const env = {
     webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || '',
   },
   email: {
-    provider: process.env.EMAIL_PROVIDER || '',
+    /** Prefer Resend; EMAIL_PROVIDER optional override. */
+    provider:
+      process.env.EMAIL_PROVIDER ||
+      (process.env.RESEND_API_KEY || process.env.EMAIL_API_KEY ? 'resend' : ''),
     from: process.env.EMAIL_FROM || '',
-    apiKey: process.env.EMAIL_API_KEY || '',
+    /** RESEND_API_KEY is canonical; EMAIL_API_KEY kept as legacy alias. */
+    apiKey: process.env.RESEND_API_KEY || process.env.EMAIL_API_KEY || '',
   },
   orderPaymentTtlMinutes: Number(process.env.ORDER_PAYMENT_TTL_MINUTES || 30),
-  /** Free shipping threshold in paise (default ₹2500). */
-  freeShippingThresholdPaise: Number(process.env.FREE_SHIPPING_THRESHOLD_PAISE || 250000),
-  /** Flat shipping in paise when under threshold (default ₹99). */
-  shippingPaise: Number(process.env.SHIPPING_PAISE || 9900),
   isProd: (process.env.NODE_ENV || 'development') === 'production',
 }
 
@@ -84,4 +84,8 @@ export function cloudinaryConfigured() {
 export function razorpayConfigured() {
   const { keyId, keySecret } = env.razorpay
   return Boolean(keyId && keySecret)
+}
+
+export function resendConfigured() {
+  return Boolean(env.email.apiKey && env.email.from)
 }

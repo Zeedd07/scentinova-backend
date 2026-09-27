@@ -55,7 +55,9 @@ export function createApp() {
     }),
   )
 
-  app.use(morgan(env.isProd ? 'combined' : 'dev'))
+  if (env.nodeEnv !== 'test') {
+    app.use(morgan(env.isProd ? 'combined' : 'dev'))
+  }
 
   // Razorpay webhooks need the raw body for HMAC verification
   app.use(
