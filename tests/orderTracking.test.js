@@ -116,7 +116,7 @@ describe('POST /api/orders/track', () => {
     assert.equal(order.paymentMethod, 'COD')
     assert.equal(order.paymentStatus, 'PENDING')
     assert.equal(order.amountDuePaise, order.pricing.totalPaise)
-    assert.deepEqual(order.destination, { city: 'Mumbai', state: 'MH' })
+    assert.deepEqual(order.destination, { city: 'Mumbai', state: 'Maharashtra' })
     assert.equal(order.items[0].quantity, 1)
     assert.equal(order.shipment, null)
 
@@ -139,38 +139,42 @@ describe('POST /api/orders/track', () => {
     assert.equal(res.status, 200)
   })
 
-  it('returns the same 404 for a wrong token and an unknown order number', async () => {
+  it('tracks by order number alone, with the same sanitized payload', async () => {
     const created = await codOrder()
-    const wrongToken = await track({ orderNumber: created.orderNumber, token: 'X'.repeat(43) })
-    const unknownOrder = await track({ orderNumber: 'SCN-20990101-DEADBEEF', token: created.trackingToken })
-
-    for (const res of [wrongToken, unknownOrder]) {
-      assert.equal(res.status, 404)
-      assert.equal(res.body.error.code, 'ORDER_NOT_FOUND')
-      assert.equal(res.body.error.message, TRACKING_NOT_FOUND_MESSAGE)
+    const res = await track({ orderNumber: created.orderNumber })
+    assert.equal(res.status, 200)
+    assert.equal(res.body.data.order.orderNumber, created.orderNumber)
+    const raw = JSON.stringify(res.body)
+    for (const leak of ['buyer@example.com', '9999999999', '1 Test Street']) {
+      assert.ok(!raw.includes(leak), `response must not include "${leak}"`)
     }
   })
 
-  it("does not let one order's token open another order", async () => {
-    const a = await codOrder()
-    const b = await codOrder()
-    const res = await track({ orderNumber: b.orderNumber, token: a.trackingToken })
+  it('ignores a stale or wrong token from older links', async () => {
+    const created = await codOrder()
+    const res = await track({ orderNumber: created.orderNumber, token: 'X'.repeat(43) })
+    assert.equal(res.status, 200)
+  })
+
+  it('returns 404 for an unknown order number', async () => {
+    const res = await track({ orderNumber: 'SCN-20990101-DEADBEEF' })
     assert.equal(res.status, 404)
+    assert.equal(res.body.error.code, 'ORDER_NOT_FOUND')
+    assert.equal(res.body.error.message, TRACKING_NOT_FOUND_MESSAGE)
   })
 
   it('rejects missing fields and unknown keys with 400', async () => {
     const created = await codOrder()
-    const noToken = await track({ orderNumber: created.orderNumber })
     const noNumber = await track({ token: created.trackingToken })
-    const extra = await track({ orderNumber: created.orderNumber, token: created.trackingToken, email: 'x@y.z' })
-    const badChars = await track({ orderNumber: '{"$ne":null}', token: 'abc' })
-    for (const res of [noToken, noNumber, extra, badChars]) {
+    const extra = await track({ orderNumber: created.orderNumber, email: 'x@y.z' })
+    const badChars = await track({ orderNumber: '{"$ne":null}' })
+    for (const res of [noNumber, extra, badChars]) {
       assert.equal(res.status, 400)
       assert.equal(res.body.error.code, 'VALIDATION_ERROR')
     }
   })
 
-  it('accepts an emailed tracking code in any case / spacing', async () => {
+  it('stores only a hash of emailed tracking codes', async () => {
     const created = await codOrder()
     const order = await Order.findOne({ orderNumber: created.orderNumber })
     const code = await issueEmailTrackingCode(order)
@@ -242,14 +246,50 @@ describe('POST /api/orders/track', () => {
     const res = await track({ orderNumber: created.orderNumber, token: created.trackingToken })
     const states = res.body.data.order.timeline.map((s) => `${s.key}:${s.state}`)
     assert.deepEqual(states, [
-      'PLACED:complete',
       'CONFIRMED:complete',
-      'PROCESSING:complete',
+      'PREPARING:complete',
       'SHIPPED:current',
-      'OUT_FOR_DELIVERY:upcoming',
       'DELIVERED:upcoming',
     ])
-    assert.equal(res.body.data.order.timeline[1].label, 'Order confirmed')
+    const labels = res.body.data.order.timeline.map((s) => s.label)
+    assert.deepEqual(labels, ['Order confirmed', 'Preparing', 'Shipped', 'Delivered'])
+  })
+
+  it('ticks the confirmed step on a new COD order, with three steps to go', async () => {
+    const created = await codOrder()
+    const res = await track({ orderNumber: created.orderNumber, token: created.trackingToken })
+    const timeline = res.body.data.order.timeline
+    assert.deepEqual(
+      timeline.map((s) => s.state),
+      ['complete', 'upcoming', 'upcoming', 'upcoming'],
+    )
+    assert.ok(timeline[0].at)
+  })
+
+  it('folds out for delivery into the shipped step', async () => {
+    const created = await codOrder()
+    await Order.updateOne(
+      { orderNumber: created.orderNumber },
+      {
+        $set: { status: 'OUT_FOR_DELIVERY' },
+        $push: {
+          statusHistory: {
+            $each: [
+              { status: 'PROCESSING', createdAt: new Date() },
+              { status: 'SHIPPED', createdAt: new Date() },
+              { status: 'OUT_FOR_DELIVERY', createdAt: new Date() },
+            ],
+          },
+        },
+      },
+    )
+    const res = await track({ orderNumber: created.orderNumber, token: created.trackingToken })
+    const timeline = res.body.data.order.timeline
+    assert.equal(timeline.length, 4)
+    assert.equal(timeline[2].label, 'Out for delivery')
+    assert.equal(timeline[2].state, 'current')
+    assert.ok(timeline[2].at)
+    assert.equal(timeline[3].state, 'upcoming')
   })
 
   it('marks cancelled orders and stops the timeline where it was reached', async () => {
@@ -268,11 +308,11 @@ describe('POST /api/orders/track', () => {
     assert.equal(order.amountDuePaise, 0)
     assert.deepEqual(
       order.timeline.map((s) => s.state),
-      ['complete', 'complete', 'skipped', 'skipped', 'skipped', 'skipped'],
+      ['complete', 'skipped', 'skipped', 'skipped'],
     )
   })
 
-  it('labels the prepaid confirmation step as payment', async () => {
+  it('shows an unpaid prepaid order as awaiting payment, then payment confirmed', async () => {
     const created = await createPaymentOrder(
       checkoutInput({ productId: product._id, paymentMethod: 'PREPAID' }),
     )
@@ -281,8 +321,38 @@ describe('POST /api/orders/track', () => {
     assert.equal(order.status, 'PENDING_PAYMENT')
     assert.equal(order.paymentStatus, 'PENDING')
     assert.equal(order.amountDuePaise, 0)
+    assert.equal(order.timeline.length, 4)
     assert.equal(order.timeline[0].state, 'current')
-    assert.equal(order.timeline[1].label, 'Payment confirmed')
+    assert.equal(order.timeline[0].label, 'Awaiting payment')
+
+    await Order.updateOne(
+      { orderNumber: created.orderNumber },
+      {
+        $set: { status: 'CONFIRMED', paymentStatus: 'PAID' },
+        $push: { statusHistory: { status: 'CONFIRMED', createdAt: new Date() } },
+      },
+    )
+    const paid = await track({ orderNumber: created.orderNumber, token: created.trackingToken })
+    assert.equal(paid.body.data.order.timeline[0].label, 'Payment confirmed')
+    assert.equal(paid.body.data.order.timeline[0].state, 'complete')
+  })
+
+  it('shows no completed steps when an unpaid order is cancelled', async () => {
+    const created = await createPaymentOrder(
+      checkoutInput({ productId: product._id, paymentMethod: 'PREPAID' }),
+    )
+    await Order.updateOne(
+      { orderNumber: created.orderNumber },
+      {
+        $set: { status: 'CANCELLED' },
+        $push: { statusHistory: { status: 'CANCELLED', createdAt: new Date() } },
+      },
+    )
+    const res = await track({ orderNumber: created.orderNumber, token: created.trackingToken })
+    assert.deepEqual(
+      res.body.data.order.timeline.map((s) => s.state),
+      ['skipped', 'skipped', 'skipped', 'skipped'],
+    )
   })
 })
 
@@ -313,7 +383,7 @@ describe('legacy + confirmation endpoints', () => {
 })
 
 describe('confirmation email tracking link', () => {
-  it('builder renders the link and code only for http(s) URLs', () => {
+  it('builder renders the link and order number only for http(s) URLs', () => {
     const order = {
       orderNumber: 'SCN-20260927-ABCDEF12',
       paymentMethod: 'COD',
@@ -326,9 +396,11 @@ describe('confirmation email tracking link', () => {
       url,
       'http://localhost:5173/track-order?order=SCN-20260927-ABCDEF12&token=7K3M-Q9XD-2TRA',
     )
-    const withLink = buildOrderConfirmationEmail(order, { trackingUrl: url, trackingCode: '7K3M-Q9XD-2TRA' })
+    const withLink = buildOrderConfirmationEmail(order, { trackingUrl: url })
     assert.ok(withLink.html.includes('Track your order'))
-    assert.ok(withLink.html.includes('7K3M-Q9XD-2TRA'))
+    assert.ok(withLink.html.includes('Or enter your order number'))
+    assert.ok(!withLink.html.includes('Tracking code'))
+    assert.ok(!withLink.text.includes('Tracking code'))
     assert.ok(withLink.text.includes(url))
 
     const bad = buildOrderConfirmationEmail(order, { trackingUrl: 'javascript:alert(1)' })
@@ -371,13 +443,11 @@ describe('confirmation email tracking link', () => {
     assert.equal(sent.length, 2)
     assert.equal(sent[0].html, sent[1].html, 'retry must send an identical payload')
 
-    const code = sent[1].text.match(/Tracking code: (\S+)/)[1]
     const link = sent[1].text.match(/Track your order: (\S+)/)[1]
     const params = new URL(link).searchParams
     assert.equal(params.get('order'), created.orderNumber)
-    assert.equal(params.get('token'), code)
 
-    const res = await track({ orderNumber: created.orderNumber, token: code })
+    const res = await track({ orderNumber: params.get('order') })
     assert.equal(res.status, 200)
 
     const stored = await Order.findOne({ orderNumber: created.orderNumber })
@@ -388,11 +458,10 @@ describe('confirmation email tracking link', () => {
 
 // Last: exhausts this app instance's limiter budget
 describe('rate limiting', () => {
-  it('blocks after repeated failed lookups but ignores successful ones', async () => {
-    const created = await codOrder()
+  it('blocks after repeated failed lookups', async () => {
     let limited = null
     for (let i = 0; i < 30; i += 1) {
-      const res = await track({ orderNumber: created.orderNumber, token: `wrong-${i}` })
+      const res = await track({ orderNumber: `SCN-20990101-${String(i).padStart(8, '0')}` })
       if (res.status === 429) {
         limited = res
         break

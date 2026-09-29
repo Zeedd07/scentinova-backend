@@ -7,6 +7,7 @@ import {
   adminCreate as createProduct,
   adminUpdate as updateProduct,
   adminDelete as deleteProduct,
+  adminDeletePermanent as deleteProductPermanent,
 } from '../controllers/productController.js'
 import {
   adminList as listOrders,
@@ -83,6 +84,7 @@ router.get('/products/:id', getProduct)
 router.post('/products', validate(productCreateSchema), createProduct)
 router.patch('/products/:id', validate(productUpdateSchema), updateProduct)
 router.delete('/products/:id', deleteProduct)
+router.delete('/products/:id/permanent', deleteProductPermanent)
 
 router.get('/orders', listOrders)
 router.get('/orders/:id', getOrder)

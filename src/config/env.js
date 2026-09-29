@@ -52,7 +52,7 @@ export const env = {
   cookieSecure,
   cookieSameSite,
   rateLimitWindowMs: Number(process.env.RATE_LIMIT_WINDOW_MS || 900000),
-  rateLimitMax: Number(process.env.RATE_LIMIT_MAX || 100),
+  rateLimitMax: Number(process.env.RATE_LIMIT_MAX || 1000),
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
     apiKey: process.env.CLOUDINARY_API_KEY || '',

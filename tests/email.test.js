@@ -28,7 +28,7 @@ function sampleOrder({ paymentMethod = 'PREPAID', overrides = {} } = {}) {
       fullName: 'Zaid Qureshi',
       addressLine1: '12 Fragrance Lane',
       city: 'Mumbai',
-      state: 'MH',
+      state: 'Maharashtra',
       postalCode: '400001',
       country: 'India',
     },

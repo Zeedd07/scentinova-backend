@@ -51,12 +51,39 @@ export const ADMIN_SETTABLE_STATUSES = [
   'CANCELLED',
 ]
 
-export function adminNextStatuses(order) {
+/** Fulfilment stages in order; admins may jump forward, and every step between is recorded. */
+const FULFILMENT_FLOW = ['CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED']
+
+/**
+ * Statuses to apply, in order, to move `from` → `to`, or null if not allowed.
+ * Forward jumps fill in the steps between (never "Out for delivery" unless it is the target).
+ */
+export function adminStatusPath(from, to) {
+  if (canTransition(from, to)) return [to]
+  const i = FULFILMENT_FLOW.indexOf(from)
+  const j = FULFILMENT_FLOW.indexOf(to)
+  if (i === -1 || j <= i) return null
+  const path = FULFILMENT_FLOW.slice(i + 1, j + 1).filter(
+    (s) => s === to || s !== 'OUT_FOR_DELIVERY',
+  )
+  let prev = from
+  for (const s of path) {
+    if (!canTransition(prev, s)) return null
+    prev = s
+  }
+  return path
+}
+
+function currentStatus(order) {
   const raw = String(order?.status || '')
-  const current = ORDER_TRANSITIONS[raw]
+  return ORDER_TRANSITIONS[raw]
     ? raw
     : mapLegacyStatus(raw, order?.paymentStatus || order?.payment?.status)
-  return (ORDER_TRANSITIONS[current] || []).filter((s) => ADMIN_SETTABLE_STATUSES.includes(s))
+}
+
+export function adminNextStatuses(order) {
+  const current = currentStatus(order)
+  return ADMIN_SETTABLE_STATUSES.filter((s) => adminStatusPath(current, s))
 }
 
 /** Map legacy statuses from pre-prepaid orders. */

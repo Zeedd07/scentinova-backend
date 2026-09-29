@@ -44,7 +44,10 @@ export const checkoutCreateSchema = z.object({
     landmark: z.string().optional().nullable(),
     city: z.string().min(1, 'City is required.'),
     state: z.string().min(1, 'State is required.'),
-    postalCode: z.string().min(4, 'Postal code is required.'),
+    postalCode: z
+      .string()
+      .trim()
+      .regex(/^[1-9][0-9]{5}$/, 'Enter a valid 6-digit PIN code.'),
     country: z.string().optional().default('India'),
   }),
   items: z.array(cartItemSchema).min(1),

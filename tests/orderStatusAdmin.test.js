@@ -63,10 +63,11 @@ describe('admin order status', () => {
     const o = await codOrder()
     const detail = await request(app).get(`/api/admin/orders/${o.id}`).set(auth())
     assert.equal(detail.status, 200)
-    assert.deepEqual(detail.body.data.order.allowedNextStatuses, ['PROCESSING', 'CANCELLED'])
+    const everyStep = ['PROCESSING', 'PACKED', 'SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED']
+    assert.deepEqual(detail.body.data.order.allowedNextStatuses, everyStep)
 
     const list = await request(app).get('/api/admin/orders').set(auth())
-    assert.deepEqual(list.body.data.orders[0].allowedNextStatuses, ['PROCESSING', 'CANCELLED'])
+    assert.deepEqual(list.body.data.orders[0].allowedNextStatuses, everyStep)
   })
 
   it('walks an order to delivered and the customer sees each step', async () => {
@@ -74,7 +75,13 @@ describe('admin order status', () => {
 
     let res = await setStatus(o.id, { status: 'PROCESSING' })
     assert.equal(res.status, 200)
-    assert.deepEqual(res.body.data.order.allowedNextStatuses, ['PACKED', 'CANCELLED'])
+    assert.deepEqual(res.body.data.order.allowedNextStatuses, [
+      'PACKED',
+      'SHIPPED',
+      'OUT_FOR_DELIVERY',
+      'DELIVERED',
+      'CANCELLED',
+    ])
 
     res = await setStatus(o.id, { status: 'PACKED' })
     assert.equal(res.status, 200)
@@ -95,11 +102,11 @@ describe('admin order status', () => {
     assert.equal(shipped.status, 'SHIPPED')
     assert.equal(shipped.statusLabel, 'Shipped')
     assert.equal(shipped.shipment.trackingNumber, 'DL123')
-    assert.equal(shipped.updates[0].status, 'SHIPPED')
-    assert.equal(shipped.updates[0].message, 'Your parcel is on its way.')
+    assert.equal(shipped.updates.at(-1).status, 'SHIPPED')
+    assert.equal(shipped.updates.at(-1).message, 'Your parcel is on its way.')
     assert.deepEqual(
       shipped.updates.map((u) => u.status),
-      ['SHIPPED', 'PACKED', 'PROCESSING', 'CONFIRMED'],
+      ['CONFIRMED', 'PROCESSING', 'PACKED', 'SHIPPED'],
     )
     assert.ok(!JSON.stringify(shipped).includes('Asha'), 'internal notes stay internal')
     assert.ok(!JSON.stringify(shipped).includes('admin@test.local'))
@@ -114,19 +121,58 @@ describe('admin order status', () => {
     assert.ok(delivered.timeline.every((s) => s.state === 'complete'))
   })
 
-  it('rejects skipped steps and re-applying the current status', async () => {
+  it('jumps forward in one go, recording every step between', async () => {
     const o = await codOrder()
-    const jump = await setStatus(o.id, { status: 'DELIVERED' })
-    assert.equal(jump.status, 400)
-    assert.equal(jump.body.error.code, 'INVALID_ORDER_STATUS')
+    const res = await setStatus(o.id, { status: 'PACKED', customerMessage: 'Packed and ready.' })
+    assert.equal(res.status, 200)
+    assert.equal(res.body.data.order.status, 'PACKED')
 
-    await setStatus(o.id, { status: 'PROCESSING' })
-    const again = await setStatus(o.id, { status: 'PROCESSING' })
+    const stored = await Order.findById(o.id)
+    const steps = stored.statusHistory.slice(-2)
+    assert.deepEqual(steps.map((h) => [h.previousStatus, h.status]), [
+      ['CONFIRMED', 'PROCESSING'],
+      ['PROCESSING', 'PACKED'],
+    ])
+    assert.equal(steps[0].customerMessage, null)
+    assert.equal(steps[1].customerMessage, 'Packed and ready.')
+  })
+
+  it('needs tracking details when a jump passes through shipped', async () => {
+    const o = await codOrder()
+    const noTracking = await setStatus(o.id, { status: 'DELIVERED' })
+    assert.equal(noTracking.status, 400)
+    assert.equal(noTracking.body.error.code, 'VALIDATION_ERROR')
+    assert.equal((await Order.findById(o.id)).status, 'CONFIRMED')
+
+    const res = await setStatus(o.id, {
+      status: 'DELIVERED',
+      shipping: { carrier: 'Hand delivery', trackingNumber: 'HD-1' },
+    })
+    assert.equal(res.status, 200)
+    const stored = await Order.findById(o.id)
+    assert.deepEqual(
+      stored.statusHistory.map((h) => h.status).filter((s) => s !== 'CONFIRMED'),
+      ['PROCESSING', 'PACKED', 'SHIPPED', 'DELIVERED'],
+      'out for delivery is not invented',
+    )
+    assert.ok(stored.fulfillment.shippedAt)
+    assert.ok(stored.fulfillment.deliveredAt)
+    assert.ok((await track(o)).body.data.order.timeline.every((s) => s.state === 'complete'))
+  })
+
+  it('rejects going backwards and re-applying the current status', async () => {
+    const o = await codOrder()
+    await setStatus(o.id, { status: 'PACKED' })
+    const back = await setStatus(o.id, { status: 'PROCESSING' })
+    assert.equal(back.status, 400)
+    assert.equal(back.body.error.code, 'INVALID_ORDER_STATUS')
+
+    const again = await setStatus(o.id, { status: 'PACKED' })
     assert.equal(again.status, 400)
     assert.equal(again.body.error.code, 'INVALID_ORDER_STATUS')
 
     const stored = await Order.findById(o.id)
-    assert.equal(stored.statusHistory.filter((h) => h.status === 'PROCESSING').length, 1)
+    assert.equal(stored.statusHistory.filter((h) => h.status === 'PACKED').length, 1)
   })
 
   it('cannot cancel once shipped', async () => {
@@ -169,8 +215,8 @@ describe('admin order updates (no status change)', () => {
 
     const tracked = (await track(o)).body.data.order
     assert.equal(tracked.status, 'CONFIRMED')
-    assert.equal(tracked.updates[0].status, 'CONFIRMED')
-    assert.equal(tracked.updates[0].message, 'Delayed by a day due to weather.')
+    assert.equal(tracked.updates.at(-1).status, 'CONFIRMED')
+    assert.equal(tracked.updates.at(-1).message, 'Delayed by a day due to weather.')
   })
 
   it('keeps note-only updates off the customer feed', async () => {

@@ -4,6 +4,7 @@ import { Order } from '../models/Order.js'
 import { Payment } from '../models/Payment.js'
 import { PaymentAttempt } from '../models/PaymentAttempt.js'
 import { ApiError } from '../utils/ApiError.js'
+import { resolveIndiaAddress } from '../utils/indiaLocations.js'
 import { env } from '../config/env.js'
 import { generateOrderNumber } from '../utils/orderNumber.js'
 import { generateTrackingToken, hashToken } from '../utils/tokens.js'
@@ -259,6 +260,8 @@ function buildCustomerAndAddress(input) {
     throw new ApiError(400, 'INVALID_ADDRESS', 'Complete shipping address is required.')
   }
 
+  const location = resolveIndiaAddress(input.shippingAddress)
+
   return {
     firstName,
     lastName,
@@ -271,10 +274,10 @@ function buildCustomerAndAddress(input) {
       addressLine1,
       addressLine2: input.shippingAddress.addressLine2 || input.shippingAddress.line2 || null,
       landmark: input.shippingAddress.landmark || null,
-      city: input.shippingAddress.city,
-      state: input.shippingAddress.state || null,
+      city: location.city,
+      state: location.state,
       postalCode: input.shippingAddress.postalCode,
-      country: input.shippingAddress.country || 'India',
+      country: location.country,
       line1: addressLine1,
       line2: input.shippingAddress.addressLine2 || input.shippingAddress.line2 || null,
     },

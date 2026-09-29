@@ -1,5 +1,5 @@
-﻿/**
- * Seed the four Scentinova house signatures.
+/**
+ * Seed the Scentinova house signatures.
  * Upserts by slug - no duplicates.
  */
 import { connectDb, disconnectDb } from '../config/db.js'

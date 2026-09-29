@@ -81,7 +81,7 @@ export function checkoutInput({ productId, quantity = 1, paymentMethod = 'PREPAI
       phone: '9999999999',
       addressLine1: '1 Test Street',
       city: 'Mumbai',
-      state: 'MH',
+      state: 'Maharashtra',
       postalCode: '400001',
       country: 'India',
     },

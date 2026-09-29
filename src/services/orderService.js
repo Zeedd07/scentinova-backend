@@ -2,7 +2,12 @@ import { Order } from '../models/Order.js'
 import { Shipment } from '../models/Shipment.js'
 import { Payment } from '../models/Payment.js'
 import { ApiError } from '../utils/ApiError.js'
-import { adminNextStatuses, canTransition, mapLegacyStatus } from '../utils/orderStatus.js'
+import {
+  adminNextStatuses,
+  adminStatusPath,
+  canTransition,
+  mapLegacyStatus,
+} from '../utils/orderStatus.js'
 import { writeAudit } from './auditService.js'
 import { notify, NotificationEvent } from './emailService.js'
 import { releaseReservations } from './inventoryService.js'
@@ -30,7 +35,7 @@ export async function listAdminOrders(query = {}) {
   const filter = {}
   if (query.status) filter.status = query.status
   if (query.q) {
-    const re = new RegExp(String(query.q).trim(), 'i')
+    const re = new RegExp(String(query.q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
     filter.$or = [
       { orderNumber: re },
       { 'customerSnapshot.name': re },
@@ -110,7 +115,8 @@ export async function updateOrderStatus(
     )
   }
 
-  if (!canTransition(current, status)) {
+  const path = adminStatusPath(current, status)
+  if (!path) {
     throw new ApiError(
       400,
       'INVALID_ORDER_STATUS',
@@ -118,7 +124,7 @@ export async function updateOrderStatus(
     )
   }
 
-  if (status === 'SHIPPED') {
+  if (path.includes('SHIPPED')) {
     const carrier = shipping?.carrier || order.fulfillment?.carrier
     const trackingNumber = shipping?.trackingNumber || order.fulfillment?.trackingNumber
     if (!carrier || !trackingNumber) {
@@ -159,7 +165,7 @@ export async function updateOrderStatus(
     )
   }
 
-  if (status === 'DELIVERED') {
+  if (path.includes('DELIVERED')) {
     order.fulfillment = {
       ...(order.fulfillment?.toObject?.() || order.fulfillment || {}),
       status: 'DELIVERED',
@@ -183,16 +189,22 @@ export async function updateOrderStatus(
   }
 
   const prev = order.status
-  order.status = status
-  order.statusHistory.push({
-    previousStatus: prev,
-    status,
-    changedBy: admin?.email || admin?.id || null,
-    source: 'ADMIN',
-    note: note || null,
-    customerMessage: customerMessage || null,
-    createdAt: new Date(),
+  const changedAt = new Date()
+  let from = prev
+  path.forEach((step, i) => {
+    const last = i === path.length - 1
+    order.statusHistory.push({
+      previousStatus: from,
+      status: step,
+      changedBy: admin?.email || admin?.id || null,
+      source: 'ADMIN',
+      note: last ? note || null : null,
+      customerMessage: last ? customerMessage || null : null,
+      createdAt: changedAt,
+    })
+    from = step
   })
+  order.status = status
   await order.save()
 
   await writeAudit({
@@ -201,7 +213,7 @@ export async function updateOrderStatus(
     action: 'ORDER_STATUS_CHANGED',
     entityType: 'Order',
     entityId: order._id,
-    metadata: { from: prev, to: status, orderNumber: order.orderNumber },
+    metadata: { from: prev, to: status, via: path, orderNumber: order.orderNumber },
   })
 
   if (status === 'SHIPPED') {

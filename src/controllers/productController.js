@@ -40,3 +40,8 @@ export const adminDelete = asyncHandler(async (req, res) => {
   const result = await productService.archiveProduct(req.params.id)
   res.json({ success: true, data: result })
 })
+
+export const adminDeletePermanent = asyncHandler(async (req, res) => {
+  const result = await productService.deleteProductPermanently(req.params.id)
+  res.json({ success: true, data: result })
+})

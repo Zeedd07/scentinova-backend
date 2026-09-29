@@ -1,11 +1,15 @@
 import rateLimit from 'express-rate-limit'
 import { env } from '../config/env.js'
 
+/** Health checks and analytics beacons (which has its own limiter) don't use up the shared budget. */
+const UNCOUNTED_PATHS = ['/health', '/analytics/']
+
 export const generalLimiter = rateLimit({
   windowMs: env.rateLimitWindowMs,
   max: env.rateLimitMax,
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => UNCOUNTED_PATHS.some((p) => req.path === p || req.path.startsWith(p)),
   message: {
     success: false,
     error: { code: 'RATE_LIMITED', message: 'Too many requests. Please try again later.' },

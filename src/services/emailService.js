@@ -111,7 +111,7 @@ function pricingFromOrder(order) {
  * Pure HTML builder — uses stored order pricing only (no recalculation).
  * Exported for unit tests.
  */
-export function buildOrderConfirmationEmail(order, { trackingUrl, trackingCode } = {}) {
+export function buildOrderConfirmationEmail(order, { trackingUrl } = {}) {
   const orderNumber = order?.orderNumber || ''
   const isCod = String(order?.paymentMethod || '').toUpperCase() === 'COD'
   const name = resolveCustomerName(order)
@@ -199,11 +199,7 @@ export function buildOrderConfirmationEmail(order, { trackingUrl, trackingCode }
           <tr>
             <td style="padding:4px 28px 24px;text-align:center;">
               <a href="${escapeHtml(safeTrackingUrl)}" style="display:inline-block;padding:13px 30px;background:#0d0c0b;color:#fffdf8;font-family:Arial,sans-serif;font-size:12px;letter-spacing:0.22em;text-transform:uppercase;text-decoration:none;">Track your order</a>
-              ${
-                trackingCode
-                  ? `<div style="margin-top:12px;font-family:Arial,sans-serif;font-size:12px;color:#7a7368;">Tracking code: <strong style="color:#1b1917;letter-spacing:0.08em;">${escapeHtml(trackingCode)}</strong></div>`
-                  : ''
-              }
+              <div style="margin-top:12px;font-family:Arial,sans-serif;font-size:12px;color:#7a7368;">Or enter your order number <strong style="color:#1b1917;letter-spacing:0.04em;">${escapeHtml(orderNumber)}</strong> on our Track Order page.</div>
             </td>
           </tr>`
     : ''
@@ -319,7 +315,6 @@ export function buildOrderConfirmationEmail(order, { trackingUrl, trackingCode }
   }
   if (safeTrackingUrl) {
     textLines.push('', `Track your order: ${safeTrackingUrl}`)
-    if (trackingCode) textLines.push(`Tracking code: ${trackingCode}`)
   }
 
   return {
@@ -458,10 +453,7 @@ export async function sendOrderConfirmationEmail(orderInput) {
   let tracking = {}
   try {
     const trackingCode = await issueEmailTrackingCode(claimedRetry)
-    tracking = {
-      trackingCode,
-      trackingUrl: buildTrackingUrl(claimedRetry.orderNumber, trackingCode),
-    }
+    tracking = { trackingUrl: buildTrackingUrl(claimedRetry.orderNumber, trackingCode) }
   } catch (err) {
     logger.warn('Tracking code not issued; sending confirmation without link', {
       orderNumber: claimedRetry.orderNumber,

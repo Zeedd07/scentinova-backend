@@ -18,6 +18,7 @@
     "migrate:local-to-atlas": "node scripts/migrateLocalToAtlas.js"
   },
   "dependencies": {
+    "@countrystatecity/countries-browser": "1.0.4",
     "bcryptjs": "^3.0.2",
     "cloudinary": "^2.11.0",
     "cookie-parser": "^1.4.7",

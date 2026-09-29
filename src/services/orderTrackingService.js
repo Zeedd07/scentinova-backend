@@ -1,8 +1,8 @@
 /**
- * Public guest order tracking.
- * Access requires order number + a secret (checkout token or emailed tracking code);
- * responses carry only what a tracking page needs — no contact details, street
- * address, payment gateway ids, internal notes, or Mongo internals.
+ * Public guest order tracking by order number alone. Because anyone holding the
+ * number (e.g. from a parcel label) can look it up, responses carry only what a
+ * tracking page needs — no name, contact details, street address, payment gateway
+ * ids, internal notes, or Mongo internals.
  */
 import { Order } from '../models/Order.js'
 import { ApiError } from '../utils/ApiError.js'
@@ -42,11 +42,11 @@ export function tokenMatchesOrder(order, token) {
   return (order.trackingCodeHashes || []).some((h) => safeEqualHex(codeHash, h))
 }
 
-export async function trackPublicOrder({ orderNumber, token }) {
+export async function trackPublicOrder({ orderNumber }) {
   const number = String(orderNumber || '').trim().toUpperCase()
   if (!number) throw notFound()
   const order = await Order.findOne({ orderNumber: number })
-  if (!tokenMatchesOrder(order, token)) throw notFound()
+  if (!order) throw notFound()
   return toPublicTracking(order)
 }
 
@@ -111,18 +111,22 @@ const STATUS_LABELS = {
   REFUNDED: 'Refunded',
 }
 
-/** Index into the customer timeline for each progress status. */
+/** Index into the four-step customer timeline for each progress status. */
 const STAGE_OF_STATUS = {
-  PENDING_PAYMENT: 0,
-  PAYMENT_PROCESSING: 0,
-  PAYMENT_FAILED: 0,
-  PAYMENT_EXPIRED: 0,
-  CONFIRMED: 1,
-  PROCESSING: 2,
-  PACKED: 2,
-  SHIPPED: 3,
-  OUT_FOR_DELIVERY: 4,
-  DELIVERED: 5,
+  CONFIRMED: 0,
+  PROCESSING: 1,
+  PACKED: 1,
+  SHIPPED: 2,
+  OUT_FOR_DELIVERY: 2,
+  DELIVERED: 3,
+}
+
+/** Before payment the first step is shown as the current one, labelled by payment state. */
+const AWAITING_PAYMENT_LABELS = {
+  PENDING_PAYMENT: 'Awaiting payment',
+  PAYMENT_PROCESSING: 'Confirming payment',
+  PAYMENT_FAILED: 'Payment not completed',
+  PAYMENT_EXPIRED: 'Payment not completed',
 }
 
 const TERMINAL_STATUSES = new Set(['CANCELLED', 'REFUND_PENDING', 'REFUNDED'])
@@ -175,38 +179,42 @@ function buildTimeline(o, status, isCod) {
   const history = Array.isArray(o.statusHistory) ? o.statusHistory : []
   const terminal = TERMINAL_STATUSES.has(status)
 
+  const awaitingLabel = AWAITING_PAYMENT_LABELS[status]
+
   let stage = STAGE_OF_STATUS[status]
   if (terminal) {
+    // Last step actually reached; -1 when the order was never confirmed.
     stage = history.reduce((max, h) => {
       const s = STAGE_OF_STATUS[h.status]
       return s != null && s > max ? s : max
-    }, 0)
+    }, -1)
   }
   if (stage == null) stage = 0
 
+  const outForDelivery = status === 'OUT_FOR_DELIVERY'
+
   const steps = [
-    { key: 'PLACED', label: 'Order placed', at: o.createdAt || null },
     {
       key: 'CONFIRMED',
-      label: isCod ? 'Order confirmed' : 'Payment confirmed',
-      at:
-        (isCod ? null : o.payment?.capturedAt) ||
-        firstHistoryAt(history, ['CONFIRMED']),
+      label: awaitingLabel || (isCod ? 'Order confirmed' : 'Payment confirmed'),
+      at: awaitingLabel
+        ? o.createdAt || null
+        : (isCod ? null : o.payment?.capturedAt) ||
+          firstHistoryAt(history, ['CONFIRMED']) ||
+          o.createdAt ||
+          null,
     },
     {
-      key: 'PROCESSING',
-      label: status === 'PACKED' ? 'Packed' : 'Processing',
+      key: 'PREPARING',
+      label: status === 'PACKED' ? 'Packed' : 'Preparing',
       at: firstHistoryAt(history, ['PROCESSING', 'PACKED']),
     },
     {
       key: 'SHIPPED',
-      label: 'Shipped',
-      at: o.fulfillment?.shippedAt || firstHistoryAt(history, ['SHIPPED']),
-    },
-    {
-      key: 'OUT_FOR_DELIVERY',
-      label: 'Out for delivery',
-      at: firstHistoryAt(history, ['OUT_FOR_DELIVERY']),
+      label: outForDelivery ? 'Out for delivery' : 'Shipped',
+      at: outForDelivery
+        ? firstHistoryAt(history, ['OUT_FOR_DELIVERY'])
+        : o.fulfillment?.shippedAt || firstHistoryAt(history, ['SHIPPED', 'OUT_FOR_DELIVERY']),
     },
     {
       key: 'DELIVERED',
@@ -219,7 +227,9 @@ function buildTimeline(o, status, isCod) {
     let state
     if (i < stage) state = 'complete'
     else if (i === stage) {
-      state = terminal || status === 'DELIVERED' ? 'complete' : 'current'
+      // Confirmation and delivery are one-off events, so they tick rather than pulse.
+      const instant = status === 'DELIVERED' || (step.key === 'CONFIRMED' && !awaitingLabel)
+      state = terminal || instant ? 'complete' : 'current'
     } else state = terminal ? 'skipped' : 'upcoming'
     return { ...step, at: state === 'complete' || state === 'current' ? step.at : null, state }
   })
@@ -228,7 +238,7 @@ function buildTimeline(o, status, isCod) {
 const UPDATE_HIDDEN_STATUSES = new Set(['PENDING_PAYMENT', 'PAYMENT_PROCESSING'])
 const MAX_UPDATES = 20
 
-/** Customer-visible history, newest first: status changes and admin messages only. */
+/** Customer-visible history, oldest first (latest MAX_UPDATES): status changes and admin messages only. */
 function buildUpdates(o) {
   const history = Array.isArray(o.statusHistory) ? o.statusHistory : []
   const updates = []
@@ -244,7 +254,7 @@ function buildUpdates(o) {
       message,
     })
   }
-  return updates.reverse().slice(0, MAX_UPDATES)
+  return updates.slice(-MAX_UPDATES)
 }
 
 function itemPaise(item) {

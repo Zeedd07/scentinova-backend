@@ -1,5 +1,7 @@
+import mongoose from 'mongoose'
 import { Product } from '../models/Product.js'
 import { Order } from '../models/Order.js'
+import { InventoryReservation } from '../models/InventoryReservation.js'
 import { ApiError } from '../utils/ApiError.js'
 import { slugify } from '../utils/slugify.js'
 import { parsePagination, paginationMeta } from '../utils/pagination.js'
@@ -264,4 +266,36 @@ export async function archiveProduct(id) {
     softDeleted: true,
     referencedByOrders: Boolean(referenced),
   }
+}
+
+/**
+ * Permanently removes a product. Orders keep their own item snapshots (name, image,
+ * price), so order history is unaffected. Blocked while a checkout still holds stock
+ * for it, because committing that payment needs the product document.
+ */
+export async function deleteProductPermanently(id) {
+  if (!mongoose.isValidObjectId(id)) {
+    throw new ApiError(404, 'PRODUCT_NOT_FOUND', 'Product not found.')
+  }
+  const product = await Product.findById(id)
+  if (!product) throw new ApiError(404, 'PRODUCT_NOT_FOUND', 'Product not found.')
+
+  const pending = await InventoryReservation.exists({
+    productId: product._id,
+    status: 'ACTIVE',
+    expiresAt: { $gt: new Date() },
+  })
+  if (pending) {
+    throw new ApiError(
+      409,
+      'PRODUCT_IN_CHECKOUT',
+      'A customer is paying for this perfume right now. Archive it instead, or try again in a few minutes.',
+    )
+  }
+
+  const orderCount = await Order.countDocuments({ 'items.productId': product._id })
+  await product.deleteOne()
+
+  // Images stay on Cloudinary: past orders still show them from their snapshots.
+  return { id: String(product._id), name: product.name, deleted: true, orderCount }
 }
