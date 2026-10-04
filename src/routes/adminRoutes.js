@@ -23,10 +23,23 @@ import {
   products as analyticsProducts,
 } from '../controllers/analyticsController.js'
 import { adminList as listNewsletter } from '../controllers/newsletterController.js'
-import { uploadImage, uploadStatus } from '../controllers/uploadController.js'
+import {
+  adminList as listOffers,
+  adminCreate as createOffer,
+  adminUpdate as updateOffer,
+  adminDelete as deleteOffer,
+  adminReorder as reorderOffers,
+} from '../controllers/offerController.js'
+import {
+  offerCreateSchema,
+  offerReorderSchema,
+  offerUpdateSchema,
+} from '../validators/offerValidators.js'
+import { uploadImage, uploadStatus, uploadVideo } from '../controllers/uploadController.js'
 import {
   handleMulterError,
   uploadProductImageMiddleware,
+  uploadProductVideoMiddleware,
 } from '../middleware/uploadMiddleware.js'
 import {
   list as listMedia,
@@ -68,6 +81,15 @@ function singleImage(req, res, next) {
 }
 
 router.post('/uploads/image', singleImage, uploadImage)
+router.post(
+  '/uploads/video',
+  (req, res, next) =>
+    uploadProductVideoMiddleware(req, res, (err) => {
+      if (err) return handleMulterError(err, req, res, next)
+      next()
+    }),
+  uploadVideo,
+)
 
 router.get('/media', listMedia)
 router.post('/media/upload', singleImage, uploadMedia)
@@ -98,5 +120,11 @@ router.get('/analytics/overview', analyticsOverview)
 router.get('/analytics/products', analyticsProducts)
 
 router.get('/newsletter', listNewsletter)
+
+router.get('/offers', listOffers)
+router.post('/offers', validate(offerCreateSchema), createOffer)
+router.put('/offers/order', validate(offerReorderSchema), reorderOffers)
+router.patch('/offers/:id', validate(offerUpdateSchema), updateOffer)
+router.delete('/offers/:id', deleteOffer)
 
 export default router

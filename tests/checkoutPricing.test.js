@@ -52,23 +52,23 @@ beforeEach(async () => {
 })
 
 describe('prepaid pricing', () => {
-  it('uses the product shipping + convenience fee and never a COD fee (₹608)', async () => {
+  it('ships free, keeps the convenience fee and never charges a COD fee (₹509)', async () => {
     const q = await quote('PREPAID')
     assert.equal(q.pricing.subtotalPaise, 49900)
-    assert.equal(q.pricing.shippingPaise, 9900)
+    assert.equal(q.pricing.shippingPaise, 0)
     assert.equal(q.pricing.convenienceFeePaise, 1000)
     assert.equal(q.pricing.codFeePaise, 0)
     assert.equal(q.pricing.discountPaise, 0)
-    assert.equal(q.pricing.totalPaise, 60800)
+    assert.equal(q.pricing.totalPaise, 50900)
     assert.equal(q.paymentMethod, 'PREPAID')
   })
 
-  it('follows admin changes to the product fees', async () => {
+  it('follows admin changes to the product fees, still shipping free', async () => {
     await setFees({ shipping: { amountPaise: 14900 }, convenience: { amountPaise: 1500 } })
     const q = await quote('PREPAID')
-    assert.equal(q.pricing.shippingPaise, 14900)
+    assert.equal(q.pricing.shippingPaise, 0)
     assert.equal(q.pricing.convenienceFeePaise, 1500)
-    assert.equal(q.pricing.totalPaise, 49900 + 14900 + 1500)
+    assert.equal(q.pricing.totalPaise, 49900 + 1500)
   })
 
   it('omits convenience fee when disabled or not applied to prepaid', async () => {
@@ -180,7 +180,7 @@ describe('COD availability (backend enforced per product)', () => {
 
     // Online payment still works and tells the UI which product blocks COD
     const q = await quote('PREPAID')
-    assert.equal(q.pricing.totalPaise, 60800)
+    assert.equal(q.pricing.totalPaise, 50900)
     assert.equal(q.paymentOptions.prepaid.enabled, true)
     assert.equal(q.paymentOptions.cod.enabled, false)
     assert.deepEqual(q.paymentOptions.cod.blockedBy, ['Seaweed'])
@@ -204,12 +204,17 @@ describe('COD availability (backend enforced per product)', () => {
     )
   })
 
-  it('returns COD fee hints in paymentOptions', async () => {
+  it('returns COD fee and shipping hints in paymentOptions', async () => {
     const q = await quote('PREPAID')
-    assert.deepEqual(q.paymentOptions.prepaid, { enabled: true, convenienceFeePaise: 1000 })
+    assert.deepEqual(q.paymentOptions.prepaid, {
+      enabled: true,
+      convenienceFeePaise: 1000,
+      shippingPaise: 0,
+    })
     assert.equal(q.paymentOptions.cod.enabled, true)
     assert.equal(q.paymentOptions.cod.codFeePaise, 8500)
     assert.equal(q.paymentOptions.cod.convenienceFeePaise, 1000)
+    assert.equal(q.paymentOptions.cod.shippingPaise, 9900)
   })
 })
 
@@ -290,12 +295,13 @@ describe('Razorpay boundary', () => {
       checkoutInput({ productId: product._id, paymentMethod: 'PREPAID' }),
     )
     assert.equal(rzp.orderCalls.length, 1)
-    assert.equal(rzp.orderCalls[0].amount, 60800)
+    assert.equal(rzp.orderCalls[0].amount, 50900)
     assert.equal(rzp.orderCalls[0].currency, 'INR')
-    assert.equal(res.amount, 60800)
+    assert.equal(res.amount, 50900)
     const order = await Order.findOne({ orderNumber: res.orderNumber }).lean()
-    assert.equal(order.pricing.totalPaise, 60800)
-    assert.equal(order.payment.amountPaise, 60800)
+    assert.equal(order.pricing.totalPaise, 50900)
+    assert.equal(order.pricing.shippingPaise, 0)
+    assert.equal(order.payment.amountPaise, 50900)
     assert.equal(order.payment.razorpayOrderId, res.razorpayOrderId)
   })
 
@@ -320,11 +326,11 @@ describe('Razorpay boundary', () => {
     assert.equal(again.orderNumber, first.orderNumber)
     assert.equal(rzp.orderCalls.length, 1)
 
-    await setFees({ shipping: { amountPaise: 14900 } })
+    await setFees({ convenience: { amountPaise: 1500 } })
     const repriced = await createPaymentOrder(input, { idempotencyKey: 'retry-key-1' })
     assert.notEqual(repriced.orderNumber, first.orderNumber)
-    assert.equal(repriced.amount, 49900 + 14900 + 1000)
-    assert.equal(rzp.orderCalls.at(-1).amount, 65800)
+    assert.equal(repriced.amount, 49900 + 1500)
+    assert.equal(rzp.orderCalls.at(-1).amount, 51400)
   })
 })
 

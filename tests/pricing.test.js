@@ -90,13 +90,32 @@ describe('calculateCheckoutPricing', () => {
     assert.equal(p.totalPaise, SUBTOTAL_499)
   })
 
-  it('one product PREPAID ₹499: shipping ₹99 + convenience ₹10, no COD fee = ₹608', () => {
+  it('one product PREPAID ₹499: free shipping + convenience ₹10, no COD fee = ₹509', () => {
     const p = price('PREPAID', [line(standardFees())])
-    assert.equal(p.shippingPaise, 9900)
+    assert.equal(p.shippingPaise, 0)
+    assert.equal(p.shipping, 0)
     assert.equal(p.convenienceFeePaise, 1000)
     assert.equal(p.codFeePaise, 0)
-    assert.equal(p.totalPaise, 60800)
-    assert.equal(p.total, 608)
+    assert.equal(p.totalPaise, 50900)
+    assert.equal(p.total, 509)
+  })
+
+  it('prepaid never pays shipping, even when every product charges it; COD does', () => {
+    const lines = [
+      line(standardFees({ shipping: { amountPaise: 14900 } }), 'A', '64b000000000000000000001'),
+      line(standardFees(), 'B', '64b000000000000000000002'),
+    ]
+    const prepaid = calculateCheckoutPricing({ subtotalPaise: 99800, paymentMethod: 'PREPAID', lines })
+    const cod = calculateCheckoutPricing({ subtotalPaise: 99800, paymentMethod: 'COD', lines })
+    assert.equal(prepaid.shippingPaise, 0)
+    assert.equal(prepaid.totalPaise, 99800 + 2000)
+    assert.equal(cod.shippingPaise, 14900)
+    assert.equal(cod.totalPaise, 99800 + 2000 + 17000 + 14900)
+    // The snapshot still records each product's configured shipping fee
+    assert.deepEqual(
+      prepaid.pricingSnapshot.lines.map((l) => l.shippingFeePaise),
+      [14900, 9900],
+    )
   })
 
   it('one product COD ₹499: adds ₹85 COD fee = ₹693', () => {
@@ -138,7 +157,7 @@ describe('calculateCheckoutPricing', () => {
   })
 
   it('shipping is free when no product charges shipping', () => {
-    const p = price('PREPAID', [line(standardFees({ shipping: { enabled: false } }))])
+    const p = price('COD', [line(standardFees({ shipping: { enabled: false } }))])
     assert.equal(p.shippingPaise, 0)
   })
 
@@ -207,11 +226,12 @@ describe('computePaymentOptions', () => {
       line(standardFees(), 'A'),
       line(standardFees({ codAllowed: false, convenience: { applyToPrepaid: false } }), 'B'),
     ])
-    assert.deepEqual(opts.prepaid, { enabled: true, convenienceFeePaise: 1000 })
+    assert.deepEqual(opts.prepaid, { enabled: true, convenienceFeePaise: 1000, shippingPaise: 0 })
     assert.equal(opts.cod.enabled, false)
     assert.deepEqual(opts.cod.blockedBy, ['B'])
     assert.equal(opts.cod.codFeePaise, 17000)
     assert.equal(opts.cod.convenienceFeePaise, 2000)
+    assert.equal(opts.cod.shippingPaise, 9900)
   })
 })
 

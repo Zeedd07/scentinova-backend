@@ -99,8 +99,8 @@ describe('pricing snapshot on orders', () => {
     assert.equal(reloadedCod.pricing.convenienceFeePaise, 1000)
     assert.equal(reloadedCod.pricing.totalPaise, 69300)
     assert.equal(reloadedCod.pricingSnapshot.lines[0].codFeePaise, 8500)
-    assert.equal(reloadedPrepaid.pricing.totalPaise, 60800)
-    assert.equal(reloadedPrepaid.payment.amountPaise, 60800)
+    assert.equal(reloadedPrepaid.pricing.totalPaise, 50900)
+    assert.equal(reloadedPrepaid.payment.amountPaise, 50900)
 
     // Admin + customer views read the stored values
     const adminView = await request(app)
@@ -118,9 +118,10 @@ describe('pricing snapshot on orders', () => {
     assert.equal(newCod.pricing.totalPaise, 49900 + 14900 + 1500 + 9900)
 
     const newPrepaid = await placeOrder('PREPAID')
-    assert.equal(newPrepaid.pricing.shippingPaise, 14900)
+    assert.equal(newPrepaid.pricing.shippingPaise, 0)
     assert.equal(newPrepaid.pricing.codFeePaise, 0)
-    assert.equal(newPrepaid.pricing.totalPaise, 49900 + 14900 + 1500)
+    assert.equal(newPrepaid.pricing.totalPaise, 49900 + 1500)
+    assert.equal(newPrepaid.pricingSnapshot.lines[0].shippingFeePaise, 14900)
   })
 
   it('disallowing COD on a product leaves existing COD orders untouched and visible to admin', async () => {
@@ -219,11 +220,11 @@ describe('confirmation email uses the stored order pricing', () => {
 
     const stored = await Order.findById(order._id).lean()
     const email = buildOrderConfirmationEmail(stored)
-    assert.equal(email.pricing.shippingPaise, 9900)
+    assert.equal(email.pricing.shippingPaise, 0)
     assert.equal(email.pricing.convenienceFeePaise, 1000)
     assert.equal(email.pricing.codFeePaise, 0)
-    assert.equal(email.pricing.totalPaise, 60800)
-    assert.equal(email.display.total, 608)
+    assert.equal(email.pricing.totalPaise, 50900)
+    assert.equal(email.display.total, 509)
     assert.equal(email.html.includes('149'), false)
   })
 

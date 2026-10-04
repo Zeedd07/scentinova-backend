@@ -101,7 +101,7 @@ describe('POST /api/payments/verify', () => {
     const order = await Order.findOne({ orderNumber: created.orderNumber }).lean()
     assert.equal(order.status, 'CONFIRMED')
     assert.equal(order.paymentStatus, 'PAID')
-    assert.equal(order.pricing.totalPaise, 60800)
+    assert.equal(order.pricing.totalPaise, 50900)
   })
 
   it('rejects an invalid signature', async () => {
@@ -185,7 +185,7 @@ describe('POST /api/webhooks/razorpay', () => {
     const order = await Order.findOne({ orderNumber: created.orderNumber }).lean()
     assert.equal(order.status, 'CONFIRMED')
     assert.equal(order.paymentStatus, 'PAID')
-    assert.equal(order.pricing.totalPaise, 60800)
+    assert.equal(order.pricing.totalPaise, 50900)
 
     const replay = await request(app)
       .post('/api/webhooks/razorpay')

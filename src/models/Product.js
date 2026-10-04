@@ -25,6 +25,18 @@ const noteImageSchema = new mongoose.Schema(
   { _id: false },
 )
 
+const productVideoSchema = new mongoose.Schema(
+  {
+    publicId: { type: String, required: true, trim: true },
+    url: { type: String, required: true },
+    posterUrl: { type: String, default: null },
+    width: { type: Number, default: null },
+    height: { type: Number, default: null },
+    duration: { type: Number, default: null },
+  },
+  { _id: false },
+)
+
 const feeAmountSchema = (extra = {}) =>
   new mongoose.Schema(
     {
@@ -84,6 +96,10 @@ const productSchema = new mongoose.Schema(
     imagePublicId: { type: String, default: null },
     gallery: { type: [String], default: [] },
     galleryPublicIds: { type: [String], default: [] },
+    /** Storefront display size per gallery image (1 = 100%), aligned with `gallery`. */
+    galleryScales: { type: [{ type: Number, min: 0.5, max: 2 }], default: [] },
+    /** Product videos on Cloudinary (resource_type video), shown after the images. */
+    videos: { type: [productVideoSchema], default: [] },
 
     notes: { type: notesSchema, default: () => ({ top: [], heart: [], base: [] }) },
     descriptors: { type: [String], default: [] },

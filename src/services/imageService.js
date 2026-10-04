@@ -1,6 +1,7 @@
 /**
  * Image upload / delivery helpers — Cloudinary only lives here.
  */
+import fs from 'fs'
 import { Readable } from 'stream'
 import {
   CLOUDINARY_PRODUCT_FOLDER,
@@ -160,6 +161,101 @@ export async function uploadProductImage(file, { slug, role = 'primary' } = {}) 
       'UPLOAD_FAILED',
       err.message || 'Upload failed. Please try again.',
     )
+  }
+}
+
+export const VIDEO_MIME = new Set(['video/mp4', 'video/quicktime', 'video/webm'])
+export const MAX_VIDEO_BYTES = 100 * 1024 * 1024 // Cloudinary free-plan video ceiling
+
+/** Web delivery for product videos; matches the eager derivative created at upload. */
+const VIDEO_DELIVERY = { quality: 'auto', width: 1280, crop: 'limit' }
+
+export function buildVideoUrl(publicId) {
+  return getCloudinary().url(publicId, {
+    secure: true,
+    resource_type: 'video',
+    format: 'mp4',
+    transformation: [VIDEO_DELIVERY],
+  })
+}
+
+export function buildVideoPosterUrl(publicId) {
+  return getCloudinary().url(publicId, {
+    secure: true,
+    resource_type: 'video',
+    format: 'jpg',
+    transformation: [{ start_offset: '0', width: 1200, crop: 'limit', quality: 'auto' }],
+  })
+}
+
+/**
+ * Upload a Multer disk file (video) to scentinova/products/<slug>/video-*.
+ * Streams from disk so large files never sit in memory.
+ */
+export async function uploadProductVideo(file, { slug } = {}) {
+  if (!file?.path) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Please choose a video file.', {
+      file: 'Video file is required.',
+    })
+  }
+  if (!VIDEO_MIME.has(file.mimetype)) {
+    throw new ApiError(400, 'INVALID_FILE', 'Only MP4, MOV and WebM videos are allowed.', {
+      file: 'Unsupported file type.',
+    })
+  }
+  if (!isCloudinaryReady()) {
+    throw new ApiError(501, 'CLOUDINARY_UNAVAILABLE', 'Cloudinary is not configured on the server.')
+  }
+
+  const publicId = `${CLOUDINARY_PRODUCT_FOLDER}/${sanitizePublicIdPart(slug)}/video-${Date.now().toString(36)}`
+  const cld = getCloudinary()
+  const result = await new Promise((resolve, reject) => {
+    const upload = cld.uploader.upload_stream(
+      {
+        public_id: publicId,
+        resource_type: 'video',
+        overwrite: false,
+        unique_filename: false,
+        use_filename: false,
+        timeout: 10 * 60 * 1000,
+        eager: [{ ...VIDEO_DELIVERY, format: 'mp4' }],
+        eager_async: true,
+      },
+      (err, res) => {
+        if (err) {
+          reject(new ApiError(502, 'UPLOAD_FAILED', 'Video upload to Cloudinary failed. Please try again.'))
+          return
+        }
+        resolve(res)
+      },
+    )
+    const source = fs.createReadStream(file.path)
+    source.on('error', () => reject(new ApiError(500, 'UPLOAD_FAILED', 'Could not read the uploaded video.')))
+    source.pipe(upload)
+  })
+
+  return {
+    publicId: result.public_id,
+    url: buildVideoUrl(result.public_id),
+    posterUrl: buildVideoPosterUrl(result.public_id),
+    width: result.width ?? null,
+    height: result.height ?? null,
+    duration: Number.isFinite(result.duration) ? Math.round(result.duration * 10) / 10 : null,
+    bytes: result.bytes ?? null,
+  }
+}
+
+/** Remove a product video from Cloudinary unless another product still uses it. */
+export async function safeDeleteUnreferencedVideo(publicId, { excludeProductId } = {}) {
+  if (!publicId || !isCloudinaryReady()) return { deleted: false }
+  const filter = { 'videos.publicId': publicId }
+  if (excludeProductId) filter._id = { $ne: excludeProductId }
+  if (await Product.exists(filter)) return { deleted: false, reason: 'referenced' }
+  try {
+    const res = await getCloudinary().uploader.destroy(publicId, { resource_type: 'video', invalidate: true })
+    return { deleted: res?.result === 'ok' || res?.result === 'not found' }
+  } catch {
+    return { deleted: false }
   }
 }
 

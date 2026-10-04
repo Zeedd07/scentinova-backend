@@ -7,8 +7,11 @@ import { slugify } from '../utils/slugify.js'
 import { parsePagination, paginationMeta } from '../utils/pagination.js'
 import {
   buildDeliveryUrl,
+  buildVideoPosterUrl,
+  buildVideoUrl,
   isCloudinaryReady,
   safeDeleteUnreferencedAsset,
+  safeDeleteUnreferencedVideo,
 } from './imageService.js'
 import { rupeesToPaise, paiseToRupees } from '../utils/money.js'
 import {
@@ -53,6 +56,13 @@ function withMediaUrls(product) {
       out.gallery = out.galleryPublicIds.map((id) => buildDeliveryUrl(id))
     } else if (out.imagePublicId) {
       out.gallery = [out.image]
+    }
+    if (Array.isArray(out.videos) && out.videos.length) {
+      out.videos = out.videos.map((v) =>
+        v.publicId
+          ? { ...v, url: buildVideoUrl(v.publicId), posterUrl: buildVideoPosterUrl(v.publicId) }
+          : v,
+      )
     }
   } catch {
     /* keep stored URLs if Cloudinary URL build fails */
@@ -168,6 +178,7 @@ export async function updateProduct(id, input) {
 
   const previousImagePublicId = product.imagePublicId
   const previousGalleryPublicIds = [...(product.galleryPublicIds || [])]
+  const previousVideoIds = (product.videos || []).map((v) => v.publicId)
 
   if (input.slug || input.name) {
     const slug = slugify(input.slug || input.name || product.name)
@@ -192,6 +203,8 @@ export async function updateProduct(id, input) {
     'imagePublicId',
     'gallery',
     'galleryPublicIds',
+    'galleryScales',
+    'videos',
     'notes',
     'descriptors',
     'stock',
@@ -246,6 +259,15 @@ export async function updateProduct(id, input) {
     }
   }
 
+  if (input.videos !== undefined) {
+    const kept = new Set((product.videos || []).map((v) => v.publicId))
+    for (const oldId of previousVideoIds) {
+      if (!kept.has(oldId)) {
+        await safeDeleteUnreferencedVideo(oldId, { excludeProductId: product._id })
+      }
+    }
+  }
+
   // Note images / backgrounds are shared library assets: never deleted here.
   return withAdminMedia(product)
 }
@@ -294,7 +316,13 @@ export async function deleteProductPermanently(id) {
   }
 
   const orderCount = await Order.countDocuments({ 'items.productId': product._id })
+  const videoIds = (product.videos || []).map((v) => v.publicId)
   await product.deleteOne()
+
+  // Videos are never snapshotted on orders, so they can go with the product.
+  for (const publicId of videoIds) {
+    await safeDeleteUnreferencedVideo(publicId)
+  }
 
   // Images stay on Cloudinary: past orders still show them from their snapshots.
   return { id: String(product._id), name: product.name, deleted: true, orderCount }

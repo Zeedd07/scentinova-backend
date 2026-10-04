@@ -16,6 +16,7 @@ import adminRoutes from './routes/adminRoutes.js'
 import checkoutRoutes from './routes/checkoutRoutes.js'
 import paymentRoutes from './routes/paymentRoutes.js'
 import webhookRoutes from './routes/webhookRoutes.js'
+import offerRoutes from './routes/offerRoutes.js'
 
 export function createApp() {
   const app = express()
@@ -101,6 +102,7 @@ export function createApp() {
   app.use('/api/orders', orderRoutes)
   app.use('/api/analytics', analyticsRoutes)
   app.use('/api/newsletter', newsletterRoutes)
+  app.use('/api/offers', offerRoutes)
   app.use('/api/admin', adminRoutes)
 
   app.use(notFoundMiddleware)

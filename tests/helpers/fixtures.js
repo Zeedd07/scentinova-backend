@@ -58,6 +58,7 @@ export async function createProduct({
   pricePaise = 49900,
   stock = 100,
   fees,
+  videos,
 } = {}) {
   const slug = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${crypto.randomUUID().slice(0, 6)}`
   return Product.create({
@@ -69,6 +70,7 @@ export async function createProduct({
     stock,
     active: true,
     ...(fees ? { fees } : {}),
+    ...(videos ? { videos } : {}),
   })
 }
 
@@ -134,7 +136,13 @@ export function stubCloudinary() {
     upload_stream: cld.uploader.upload_stream,
     destroy: cld.uploader.destroy,
   }
-  const state = { uploads: [], destroys: [], failDestroy: false, existing: new Set() }
+  const state = {
+    uploads: [],
+    destroys: [],
+    destroyCalls: [],
+    failDestroy: false,
+    existing: new Set(),
+  }
 
   cld.uploader.upload_stream = (options, cb) => {
     const sink = new PassThrough()
@@ -156,8 +164,9 @@ export function stubCloudinary() {
     })
     return sink
   }
-  cld.uploader.destroy = async (publicId) => {
+  cld.uploader.destroy = async (publicId, options = {}) => {
     state.destroys.push(publicId)
+    state.destroyCalls.push({ publicId, options })
     if (state.failDestroy) throw new Error('network down')
     return { result: 'ok' }
   }

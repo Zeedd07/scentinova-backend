@@ -16,6 +16,30 @@ const noteImageSchema = z.object({
   hideImage: z.boolean().optional().default(false),
 })
 
+export const MAX_PRODUCT_VIDEOS = 6
+
+const httpsUrl = z
+  .string()
+  .trim()
+  .max(1000)
+  .refine((v) => /^https:\/\//i.test(v), 'Must be an https URL.')
+
+/** Video uploaded via /admin/uploads/video; only product-folder Cloudinary ids. */
+const productVideoSchema = z
+  .object({
+    publicId: z
+      .string()
+      .trim()
+      .regex(/^scentinova\/products\/[a-z0-9/_-]+$/i, 'Invalid video id.')
+      .max(300),
+    url: httpsUrl,
+    posterUrl: z.union([httpsUrl, z.null()]).optional().default(null),
+    width: z.union([z.number().int().min(0), z.null()]).optional().default(null),
+    height: z.union([z.number().int().min(0), z.null()]).optional().default(null),
+    duration: z.union([z.number().min(0), z.null()]).optional().default(null),
+  })
+  .strip()
+
 /** ₹10,000 ceiling per fee guards against rupee/paise mix-ups in the admin form. */
 export const MAX_PRODUCT_FEE_PAISE = 1_000_000
 
@@ -70,6 +94,16 @@ export const productCreateSchema = z.object({
   imagePublicId: z.union([z.string(), z.null()]).optional().default(null),
   gallery: z.array(z.string()).optional().default([]),
   galleryPublicIds: z.array(z.string()).optional().default([]),
+  galleryScales: z
+    .array(
+      z
+        .number({ invalid_type_error: 'Image size must be a number.' })
+        .min(0.5, 'Image size cannot go below 50%.')
+        .max(2, 'Image size cannot go above 200%.'),
+    )
+    .max(30)
+    .optional(),
+  videos: z.array(productVideoSchema).max(MAX_PRODUCT_VIDEOS, `Up to ${MAX_PRODUCT_VIDEOS} videos.`).optional(),
   notes: notesSchema.optional().default({ top: [], heart: [], base: [] }),
   descriptors: z.array(z.string()).optional().default([]),
   stock: z.number().int().min(0).optional().default(0),

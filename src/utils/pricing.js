@@ -7,6 +7,7 @@
  * Fee rules:
  *   - convenience / COD fee: charged once per cart line (quantity does not multiply)
  *   - shipping: one parcel per order, so the highest line shipping fee is charged
+ *   - prepaid orders ship free; only COD orders pay shipping
  *   - COD is available only when every line allows it
  */
 import { ApiError } from './ApiError.js'
@@ -127,14 +128,25 @@ export function computePaymentOptions(lines) {
     prepaid: {
       enabled: true,
       convenienceFeePaise: sum((f) => lineConvenienceFee(f, PAYMENT_METHODS.PREPAID)),
+      shippingPaise: shippingFor(PAYMENT_METHODS.PREPAID, prepared),
     },
     cod: {
       enabled: blockedBy.length === 0,
       codFeePaise: sum((f) => assertPaise(f.cod.amountPaise, 'COD fee')),
       convenienceFeePaise: sum((f) => lineConvenienceFee(f, PAYMENT_METHODS.COD)),
+      shippingPaise: shippingFor(PAYMENT_METHODS.COD, prepared),
       blockedBy,
     },
   }
+}
+
+/** One parcel per order: the highest line shipping fee, waived for prepaid orders. */
+function shippingFor(method, prepared) {
+  if (method === PAYMENT_METHODS.PREPAID) return 0
+  return prepared.reduce(
+    (max, l) => Math.max(max, assertPaise(l.fees.shipping.amountPaise, 'shipping')),
+    0,
+  )
 }
 
 /**
@@ -165,7 +177,7 @@ export function calculateCheckoutPricing({
 
   let convenienceFeePaise = 0
   let codFeePaise = 0
-  let shippingPaise = 0
+  const shippingPaise = shippingFor(method, prepared)
   const snapshotLines = []
 
   for (const line of prepared) {
@@ -177,7 +189,6 @@ export function calculateCheckoutPricing({
 
     convenienceFeePaise += lineConvenience
     codFeePaise += lineCod
-    shippingPaise = Math.max(shippingPaise, lineShipping)
 
     snapshotLines.push({
       productId: line.productId,
