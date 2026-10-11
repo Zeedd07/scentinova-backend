@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import {
+  PRODUCT_DISCOUNT_MIN_PRICE_PAISE,
+  PRODUCT_DISCOUNT_PERCENT_MAX,
+  PRODUCT_DISCOUNT_PERCENT_MIN,
+  PRODUCT_DISCOUNT_TYPES,
+} from '../models/Product.js'
 
 const notesSchema = z.object({
   top: z.array(z.string()).optional().default([]),
@@ -67,6 +73,59 @@ const productFeesSchema = z.object({
   codAllowed: z.boolean().optional().default(true),
 })
 
+/** Whether the discount is below the product price is checked in productService. */
+const productDiscountSchema = z
+  .object({
+    type: z.enum(PRODUCT_DISCOUNT_TYPES).optional().default('NONE'),
+    percentOff: z
+      .union([
+        z
+          .number({ invalid_type_error: 'Percent off must be a number.' })
+          .int('Percent off must be a whole number.')
+          .min(
+            PRODUCT_DISCOUNT_PERCENT_MIN,
+            `Percent off must be at least ${PRODUCT_DISCOUNT_PERCENT_MIN}%.`,
+          )
+          .max(
+            PRODUCT_DISCOUNT_PERCENT_MAX,
+            `Percent off can be at most ${PRODUCT_DISCOUNT_PERCENT_MAX}%.`,
+          ),
+        z.null(),
+      ])
+      .optional()
+      .default(null),
+    salePricePaise: z
+      .union([
+        z
+          .number({ invalid_type_error: 'Discounted price must be a number.' })
+          .int('Discounted price must be a whole number of paise.')
+          .min(PRODUCT_DISCOUNT_MIN_PRICE_PAISE, 'Discounted price must be at least ₹1.')
+          .refine((v) => v % 100 === 0, 'Discounted price must be a whole rupee amount.'),
+        z.null(),
+      ])
+      .optional()
+      .default(null),
+  })
+  .superRefine((d, ctx) => {
+    if (d.type === 'PERCENT' && d.percentOff == null) {
+      ctx.addIssue({ code: 'custom', path: ['percentOff'], message: 'Enter the percent off.' })
+    }
+    if (d.type === 'PRICE' && d.salePricePaise == null) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['salePricePaise'],
+        message: 'Enter the discounted price.',
+      })
+    }
+  })
+  .transform((d) => ({
+    type: d.type,
+    percentOff: d.type === 'PERCENT' ? d.percentOff : null,
+    salePricePaise: d.type === 'PRICE' ? d.salePricePaise : null,
+  }))
+
+export const PRODUCT_CATEGORY_MAX = 40
+
 /** Required INR price — coerces numeric strings from JSON/forms. */
 const priceSchema = z.coerce
   .number({
@@ -86,7 +145,12 @@ export const productCreateSchema = z.object({
   currency: z.string().optional().default('INR'),
   size: z.string().optional().default('50ML'),
   concentration: z.string().optional().default('Parfum'),
-  category: z.string().optional().default(''),
+  category: z
+    .string()
+    .trim()
+    .max(PRODUCT_CATEGORY_MAX, `Category can be at most ${PRODUCT_CATEGORY_MAX} characters.`)
+    .optional()
+    .default(''),
   featured: z.boolean().optional().default(false),
   active: z.boolean().optional().default(true),
   badge: z.union([z.string(), z.null()]).optional().default(null),
@@ -111,6 +175,7 @@ export const productCreateSchema = z.object({
   noteImages: z.array(noteImageSchema).max(90).optional(),
   backgroundAssetId: z.union([objectIdString, z.null()]).optional(),
   fees: productFeesSchema.optional(),
+  discount: productDiscountSchema.optional(),
 })
 
 export const productUpdateSchema = productCreateSchema.partial()

@@ -76,7 +76,7 @@ function formatAddress(order) {
     a.fullName || resolveCustomerName(order),
     a.addressLine1 || a.line1,
     a.addressLine2 || a.line2,
-    a.landmark,
+    a.landmark && `Landmark: ${a.landmark}`,
     [a.city, a.state, a.postalCode].filter(Boolean).join(', '),
     a.country || 'India',
   ].filter(Boolean)
@@ -89,7 +89,9 @@ function itemUnitPaise(item) {
   return 0
 }
 
+/** Line amount before any sale discount; the discount is listed once under the totals. */
 function itemTotalPaise(item) {
+  if (item.subtotalPaise != null) return Number(item.subtotalPaise)
   if (item.totalPaise != null) return Number(item.totalPaise)
   if (item.lineTotal != null) return Math.round(Number(item.lineTotal) * 100)
   return itemUnitPaise(item) * Number(item.quantity || 0)
@@ -101,6 +103,7 @@ function pricingFromOrder(order) {
     subtotalPaise: Number(p.subtotalPaise ?? 0),
     shippingPaise: Number(p.shippingPaise ?? 0),
     discountPaise: Number(p.discountPaise ?? 0),
+    discountLabel: p.discountLabel || 'Discount',
     convenienceFeePaise: Number(p.convenienceFeePaise ?? 0),
     codFeePaise: Number(p.codFeePaise ?? 0),
     totalPaise: Number(p.totalPaise ?? 0),
@@ -169,7 +172,7 @@ export function buildOrderConfirmationEmail(order, { trackingUrl } = {}) {
   }
 
   if (pricing.discountPaise > 0) {
-    feeRows.push(['Discount', -pricing.discountPaise])
+    feeRows.push([pricing.discountLabel, -pricing.discountPaise])
   }
 
   const feeHtml = feeRows
@@ -307,7 +310,7 @@ export function buildOrderConfirmationEmail(order, { trackingUrl } = {}) {
     textLines.push(`COD Fee: ${formatPaiseInr(pricing.codFeePaise)}`)
   }
   if (pricing.discountPaise > 0) {
-    textLines.push(`Discount: −${formatPaiseInr(pricing.discountPaise)}`)
+    textLines.push(`${pricing.discountLabel}: −${formatPaiseInr(pricing.discountPaise)}`)
   }
   textLines.push(`Total: ${formatPaiseInr(pricing.totalPaise)}`)
   if (isCod) {

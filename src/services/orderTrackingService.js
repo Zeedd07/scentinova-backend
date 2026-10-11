@@ -260,7 +260,9 @@ function buildUpdates(o) {
 function itemPaise(item) {
   const unit =
     item.unitPricePaise ?? (item.unitPrice != null ? Math.round(item.unitPrice * 100) : 0)
+  // Before any sale discount: the discount is listed once under pricing
   const total =
+    item.subtotalPaise ??
     item.totalPaise ??
     (item.lineTotal != null ? Math.round(item.lineTotal * 100) : unit * (item.quantity || 0))
   return { unit, total }
@@ -315,6 +317,7 @@ export function toPublicTracking(order) {
       subtotalPaise: Number(p.subtotalPaise ?? 0),
       shippingPaise: Number(p.shippingPaise ?? 0),
       discountPaise: Number(p.discountPaise ?? 0),
+      discountLabel: p.discountLabel || null,
       convenienceFeePaise: Number(p.convenienceFeePaise ?? 0),
       codFeePaise: Number(p.codFeePaise ?? 0),
       totalPaise,

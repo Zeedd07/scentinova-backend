@@ -67,6 +67,30 @@ const productFeesSchema = new mongoose.Schema(
   { _id: false },
 )
 
+export const PRODUCT_DISCOUNT_TYPES = Object.freeze(['NONE', 'PERCENT', 'PRICE'])
+export const PRODUCT_DISCOUNT_PERCENT_MIN = 1
+export const PRODUCT_DISCOUNT_PERCENT_MAX = 90
+/** Discounted prices are whole rupees, never below ₹1. */
+export const PRODUCT_DISCOUNT_MIN_PRICE_PAISE = 100
+
+/**
+ * The product's own standing discount: a percentage off or a fixed discounted price.
+ * Only the field matching `type` is set; a live festival sale with a lower price wins instead.
+ */
+const productDiscountSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: PRODUCT_DISCOUNT_TYPES, default: 'NONE' },
+    percentOff: {
+      type: Number,
+      default: null,
+      min: PRODUCT_DISCOUNT_PERCENT_MIN,
+      max: PRODUCT_DISCOUNT_PERCENT_MAX,
+    },
+    salePricePaise: { type: Number, default: null, min: PRODUCT_DISCOUNT_MIN_PRICE_PAISE },
+  },
+  { _id: false },
+)
+
 const productSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
@@ -84,6 +108,7 @@ const productSchema = new mongoose.Schema(
     price: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'INR' },
     fees: { type: productFeesSchema, default: () => ({}) },
+    discount: { type: productDiscountSchema, default: () => ({}) },
 
     size: { type: String, default: '50ML' },
     concentration: { type: String, default: 'Parfum' },

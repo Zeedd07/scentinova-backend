@@ -27,21 +27,41 @@ export const checkoutQuoteSchema = z.object({
   expectedTotalPaise: z.coerce.number().int().optional(),
 })
 
-export const checkoutCreateSchema = z.object({
-  paymentMethod: paymentMethodSchema,
-  customer: z.object({
-    name: z.string().min(1, 'Name is required.'),
-    email: z.string().email('Enter a valid email address.'),
-    phone: z.string().min(8).max(20).optional().nullable(),
-  }),
-  shippingAddress: z.object({
+export const ADDRESS_PART_MAX = 120
+
+/** Address part; whitespace collapsed, blank becomes null. */
+function addressPart(label) {
+  return z
+    .string()
+    .max(ADDRESS_PART_MAX, `${label} must be ${ADDRESS_PART_MAX} characters or fewer.`)
+    .optional()
+    .nullable()
+    .transform((v) => {
+      const clean = String(v || '').trim().replace(/\s+/g, ' ')
+      return clean || null
+    })
+}
+
+/** Required parts of a structured address, with the message shown under each field. */
+const REQUIRED_ADDRESS_PARTS = [
+  ['houseNumber', 'Enter your flat, house or room number.'],
+  ['building', 'Enter your building or house name.'],
+  ['area', 'Enter your street, area or locality.'],
+]
+
+const shippingAddressSchema = z
+  .object({
     fullName: z.string().min(1).optional(),
     phone: z.string().min(8).max(20).optional().nullable(),
-    addressLine1: z.string().min(1, 'Address is required.'),
+    houseNumber: addressPart('Flat / house no.'),
+    building: addressPart('Building name'),
+    area: addressPart('Street / area'),
+    landmark: addressPart('Landmark'),
+    // Single-line format sent by older storefront builds
+    addressLine1: z.string().optional().nullable(),
     addressLine2: z.string().optional().nullable(),
     line1: z.string().optional(),
     line2: z.string().optional().nullable(),
-    landmark: z.string().optional().nullable(),
     city: z.string().min(1, 'City is required.'),
     state: z.string().min(1, 'State is required.'),
     postalCode: z
@@ -49,7 +69,24 @@ export const checkoutCreateSchema = z.object({
       .trim()
       .regex(/^[1-9][0-9]{5}$/, 'Enter a valid 6-digit PIN code.'),
     country: z.string().optional().default('India'),
+  })
+  .superRefine((a, ctx) => {
+    const structured = REQUIRED_ADDRESS_PARTS.some(([key]) => a[key])
+    const legacyLine = String(a.addressLine1 || a.line1 || '').trim()
+    if (!structured && legacyLine) return
+    for (const [key, message] of REQUIRED_ADDRESS_PARTS) {
+      if (!a[key]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message })
+    }
+  })
+
+export const checkoutCreateSchema = z.object({
+  paymentMethod: paymentMethodSchema,
+  customer: z.object({
+    name: z.string().min(1, 'Name is required.'),
+    email: z.string().email('Enter a valid email address.'),
+    phone: z.string().min(8).max(20).optional().nullable(),
   }),
+  shippingAddress: shippingAddressSchema,
   items: z.array(cartItemSchema).min(1),
   customerNote: z.string().max(500).optional().nullable(),
 })

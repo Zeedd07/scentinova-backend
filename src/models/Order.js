@@ -61,6 +61,9 @@ const orderSchema = new mongoose.Schema(
     shippingAddress: {
       fullName: { type: String, default: '' },
       phone: { type: String, default: null },
+      houseNumber: { type: String, default: null },
+      building: { type: String, default: null },
+      area: { type: String, default: null },
       addressLine1: { type: String, default: '' },
       addressLine2: { type: String, default: null },
       landmark: { type: String, default: null },
@@ -84,6 +87,8 @@ const orderSchema = new mongoose.Schema(
       currency: { type: String, default: 'INR' },
       subtotalPaise: { type: Number, default: 0 },
       discountPaise: { type: Number, default: 0 },
+      /** Sale name shown beside the discount (e.g. "Diwali Sale"); null when there is no discount. */
+      discountLabel: { type: String, default: null },
       taxPaise: { type: Number, default: 0 },
       shippingPaise: { type: Number, default: 0 },
       codFeePaise: { type: Number, default: 0 },

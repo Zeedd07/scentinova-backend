@@ -20,11 +20,33 @@ import {
   pruneNoteImages,
   resolveNoteMedia,
 } from './mediaService.js'
+import { getLiveSales, publicSaleFor } from './saleService.js'
 
-/** Admin-only media references and fee configuration never leave the admin API. */
-function toPublic(product) {
-  const { noteImages: _noteImages, backgroundAssetId: _bg, fees: _fees, ...rest } = product
-  return rest
+/**
+ * Admin-only media references, fee and discount configuration never leave the admin API;
+ * the resulting sale price is exposed as `sale` instead.
+ */
+function toPublic(product, liveSales = []) {
+  const {
+    noteImages: _noteImages,
+    backgroundAssetId: _bg,
+    fees: _fees,
+    discount,
+    ...rest
+  } = product
+  return { ...rest, sale: publicSaleFor({ ...rest, discount }, liveSales) }
+}
+
+/** A fixed discounted price must stay below the regular price it discounts. */
+function assertDiscountFits(discount, pricePaise) {
+  if (discount?.type !== 'PRICE' || discount.salePricePaise == null) return
+  if (discount.salePricePaise >= pricePaise) {
+    throw new ApiError(
+      400,
+      'VALIDATION_ERROR',
+      'The discounted price must be lower than the regular price.',
+    )
+  }
 }
 
 async function withAdminMedia(productDoc) {
@@ -93,27 +115,31 @@ export async function listPublicProducts(query) {
   if (query.sort === 'name') sort = { name: 1 }
   if (query.sort === 'newest') sort = { createdAt: -1 }
 
-  const [products, total] = await Promise.all([
+  const [products, total, liveSales] = await Promise.all([
     Product.find(filter).sort(sort).skip(skip).limit(limit),
     Product.countDocuments(filter),
+    getLiveSales(),
   ])
 
   return {
-    products: products.map((p) => toPublic(withMediaUrls(p.toJSON()))),
+    products: products.map((p) => toPublic(withMediaUrls(p.toJSON()), liveSales)),
     meta: paginationMeta(page, limit, total),
   }
 }
 
 export async function listFeaturedProducts() {
-  const products = await Product.find({ active: true, featured: true }).sort({ name: 1 })
-  return products.map((p) => toPublic(withMediaUrls(p.toJSON())))
+  const [products, liveSales] = await Promise.all([
+    Product.find({ active: true, featured: true }).sort({ name: 1 }),
+    getLiveSales(),
+  ])
+  return products.map((p) => toPublic(withMediaUrls(p.toJSON()), liveSales))
 }
 
 export async function getProductBySlug(slug) {
   const product = await Product.findOne({ slug, active: true })
   if (!product) throw new ApiError(404, 'PRODUCT_NOT_FOUND', 'Product not found.')
-  const noteMedia = await resolveNoteMedia(product)
-  return { ...toPublic(withMediaUrls(product.toJSON())), noteMedia }
+  const [noteMedia, liveSales] = await Promise.all([resolveNoteMedia(product), getLiveSales()])
+  return { ...toPublic(withMediaUrls(product.toJSON()), liveSales), noteMedia }
 }
 
 export async function listAdminProducts(query) {
@@ -131,6 +157,17 @@ export async function listAdminProducts(query) {
     products: products.map((p) => withMediaUrls(p.toJSON())),
     meta: paginationMeta(page, limit, total),
   }
+}
+
+/** Categories in use on any product (archived included), one entry per name ignoring case. */
+export async function listProductCategories() {
+  const raw = await Product.distinct('category')
+  const byKey = new Map()
+  for (const value of raw) {
+    const name = String(value || '').trim()
+    if (name && !byKey.has(name.toLowerCase())) byKey.set(name.toLowerCase(), name)
+  }
+  return [...byKey.values()].sort((a, b) => a.localeCompare(b))
 }
 
 export async function getAdminProduct(id) {
@@ -156,6 +193,7 @@ export async function createProduct(input) {
   if (money.pricePaise == null) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Price is required.')
   }
+  assertDiscountFits(input.discount, money.pricePaise)
   const product = await Product.create({
     ...input,
     ...money,
@@ -214,6 +252,7 @@ export async function updateProduct(id, input) {
     'allowBackorder',
     'backgroundAssetId',
     'fees',
+    'discount',
   ]
 
   if (input.noteImages !== undefined || input.notes !== undefined) {
@@ -234,6 +273,10 @@ export async function updateProduct(id, input) {
     const money = syncMoneyFields(input)
     product.price = money.price
     product.pricePaise = money.pricePaise
+  }
+
+  if (input.discount !== undefined || input.price !== undefined || input.pricePaise !== undefined) {
+    assertDiscountFits(product.discount, product.pricePaise)
   }
 
   await product.save()

@@ -18,6 +18,7 @@ import {
   requiresRazorpay,
 } from '../utils/pricing.js'
 import { reserveForOrder, commitReservations } from './inventoryService.js'
+import { getLiveSales, priceWithSale } from './saleService.js'
 import * as razorpayService from './razorpayService.js'
 import { writeAudit } from './auditService.js'
 import { sendOrderConfirmationEmailSafe } from './emailService.js'
@@ -34,11 +35,12 @@ function resolvePricePaise(product) {
   return null
 }
 
-function orderPricing(breakdown) {
+function orderPricing(breakdown, discountLabel = null) {
   return {
     currency: 'INR',
     subtotalPaise: breakdown.subtotalPaise,
     discountPaise: breakdown.discountPaise,
+    discountLabel: breakdown.discountPaise > 0 ? discountLabel : null,
     taxPaise: breakdown.taxPaise,
     shippingPaise: breakdown.shippingPaise,
     codFeePaise: breakdown.codFeePaise,
@@ -52,26 +54,45 @@ function feeLine(product) {
   return { productId: product._id.toString(), name: product.name, fees: product.fees }
 }
 
+/** Saving on one cart line (whole quantity) from a live sale or the product's own discount. */
+function lineSaleDiscount(product, unitPricePaise, quantity, liveSales) {
+  const priced = priceWithSale(product, unitPricePaise, liveSales)
+  return priced ? { paise: priced.unitDiscountPaise * quantity, saleName: priced.sale.name } : null
+}
+
+/** One sale: its name. Several sales across the cart: a generic label. */
+function discountLabelFor(saleNames) {
+  const unique = [...new Set(saleNames)]
+  if (!unique.length) return null
+  return unique.length === 1 ? unique[0] : 'Sale discount'
+}
+
 /**
  * Re-price an existing order's items with the current product prices and fees.
  * Used to decide whether an idempotent retry may reuse a pending order.
  */
 async function currentTotalForOrder(order) {
   const ids = (order.items || []).map((i) => i.productId)
-  const products = await Product.find({ _id: { $in: ids } })
+  const [products, liveSales] = await Promise.all([
+    Product.find({ _id: { $in: ids } }),
+    getLiveSales(),
+  ])
   const byId = new Map(products.map((p) => [p._id.toString(), p]))
   let subtotalPaise = 0
+  let discountPaise = 0
   const lines = []
   for (const item of order.items || []) {
     const product = byId.get(String(item.productId))
     const unitPricePaise = product?.active ? resolvePricePaise(product) : null
     if (unitPricePaise == null) return null
     subtotalPaise += unitPricePaise * item.quantity
+    discountPaise += lineSaleDiscount(product, unitPricePaise, item.quantity, liveSales)?.paise ?? 0
     lines.push(feeLine(product))
   }
   if (!lines.length) return null
   return calculateCheckoutPricing({
     subtotalPaise,
+    discountPaise,
     paymentMethod: order.paymentMethod,
     lines,
   }).totalPaise
@@ -115,12 +136,17 @@ export async function quoteCart({
     }
   }
 
-  const products = await Product.find({ _id: { $in: productIds } })
+  const [products, liveSales] = await Promise.all([
+    Product.find({ _id: { $in: productIds } }),
+    getLiveSales(),
+  ])
   const byId = new Map(products.map((p) => [p._id.toString(), p]))
 
   const lineItems = []
   const feeLines = []
   let subtotalPaise = 0
+  let discountPaise = 0
+  const saleNames = []
   const changes = []
 
   for (const line of items) {
@@ -168,6 +194,10 @@ export async function quoteCart({
     const lineSubtotal = unitPricePaise * qty
     subtotalPaise += lineSubtotal
     feeLines.push(feeLine(product))
+    const saleDiscount = lineSaleDiscount(product, unitPricePaise, qty, liveSales)
+    const lineDiscount = saleDiscount?.paise ?? 0
+    discountPaise += lineDiscount
+    if (saleDiscount) saleNames.push(saleDiscount.saleName)
 
     lineItems.push({
       productId: product._id.toString(),
@@ -180,11 +210,11 @@ export async function quoteCart({
       quantity: qty,
       unitPricePaise,
       subtotalPaise: lineSubtotal,
-      discountPaise: 0,
+      discountPaise: lineDiscount,
       taxPaise: 0,
-      totalPaise: lineSubtotal,
+      totalPaise: lineSubtotal - lineDiscount,
       unitPrice: paiseToRupees(unitPricePaise),
-      lineTotal: paiseToRupees(lineSubtotal),
+      lineTotal: paiseToRupees(lineSubtotal - lineDiscount),
     })
   }
 
@@ -198,7 +228,7 @@ export async function quoteCart({
 
   const breakdown = calculateCheckoutPricing({
     subtotalPaise,
-    discountPaise: 0,
+    discountPaise,
     taxPaise: 0,
     paymentMethod: method,
     lines: feeLines,
@@ -216,7 +246,7 @@ export async function quoteCart({
     currency: 'INR',
     paymentMethod: method,
     items: lineItems,
-    pricing: orderPricing(breakdown),
+    pricing: orderPricing(breakdown, discountLabelFor(saleNames)),
     pricingSnapshot: breakdown.pricingSnapshot,
     paymentOptions: computePaymentOptions(feeLines),
     subtotalPaise: breakdown.subtotalPaise,
@@ -254,9 +284,8 @@ function buildCustomerAndAddress(input) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Name and email are required.')
   }
 
-  const addressLine1 =
-    input.shippingAddress?.addressLine1 || input.shippingAddress?.line1 || ''
-  if (!addressLine1 || !input.shippingAddress?.city || !input.shippingAddress?.postalCode) {
+  const parts = addressParts(input.shippingAddress)
+  if (!parts.addressLine1 || !input.shippingAddress?.city || !input.shippingAddress?.postalCode) {
     throw new ApiError(400, 'INVALID_ADDRESS', 'Complete shipping address is required.')
   }
 
@@ -271,16 +300,58 @@ function buildCustomerAndAddress(input) {
     shippingAddress: {
       fullName: input.shippingAddress.fullName || name,
       phone: input.shippingAddress.phone || phone,
-      addressLine1,
-      addressLine2: input.shippingAddress.addressLine2 || input.shippingAddress.line2 || null,
-      landmark: input.shippingAddress.landmark || null,
+      houseNumber: parts.houseNumber,
+      building: parts.building,
+      area: parts.area,
+      addressLine1: parts.addressLine1,
+      addressLine2: parts.addressLine2,
+      landmark: parts.landmark,
       city: location.city,
       state: location.state,
       postalCode: input.shippingAddress.postalCode,
       country: location.country,
-      line1: addressLine1,
-      line2: input.shippingAddress.addressLine2 || input.shippingAddress.line2 || null,
+      line1: parts.addressLine1,
+      line2: parts.addressLine2,
     },
+  }
+}
+
+function cleanAddressText(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ') || null
+}
+
+/**
+ * Flat/house no. + building become address line 1 and street/area line 2, so emails,
+ * labels and the admin view keep reading addressLine1/addressLine2. Older clients send
+ * a single addressLine1 instead.
+ */
+function addressParts(address = {}) {
+  const houseNumber = cleanAddressText(address.houseNumber)
+  const building = cleanAddressText(address.building)
+  const area = cleanAddressText(address.area)
+  const landmark = cleanAddressText(address.landmark)
+
+  if (houseNumber || building || area) {
+    if (!houseNumber || !building || !area) {
+      throw new ApiError(400, 'INVALID_ADDRESS', 'Complete shipping address is required.')
+    }
+    return {
+      houseNumber,
+      building,
+      area,
+      landmark,
+      addressLine1: `${houseNumber}, ${building}`,
+      addressLine2: area,
+    }
+  }
+
+  return {
+    houseNumber: null,
+    building: null,
+    area: null,
+    landmark,
+    addressLine1: cleanAddressText(address.addressLine1 || address.line1),
+    addressLine2: cleanAddressText(address.addressLine2 || address.line2),
   }
 }
 

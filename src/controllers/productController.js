@@ -21,6 +21,11 @@ export const adminList = asyncHandler(async (req, res) => {
   res.json({ success: true, data: { products: result.products }, meta: result.meta })
 })
 
+export const adminCategories = asyncHandler(async (_req, res) => {
+  const categories = await productService.listProductCategories()
+  res.json({ success: true, data: { categories } })
+})
+
 export const adminGet = asyncHandler(async (req, res) => {
   const product = await productService.getAdminProduct(req.params.id)
   res.json({ success: true, data: { product } })

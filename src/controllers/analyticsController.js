@@ -11,6 +11,12 @@ export const overview = asyncHandler(async (_req, res) => {
   res.json({ success: true, data })
 })
 
+export const report = asyncHandler(async (req, res) => {
+  const range = typeof req.query.range === 'string' ? req.query.range : '30d'
+  const data = await analyticsService.getAnalyticsReport({ range })
+  res.json({ success: true, data })
+})
+
 export const products = asyncHandler(async (_req, res) => {
   const data = await analyticsService.getProductAnalytics()
   res.json({ success: true, data })

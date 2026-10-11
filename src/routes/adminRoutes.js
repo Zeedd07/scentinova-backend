@@ -3,6 +3,7 @@ import { requireAuth, requireAdmin } from '../middleware/authMiddleware.js'
 import { dashboard } from '../controllers/adminController.js'
 import {
   adminList as listProducts,
+  adminCategories as listProductCategories,
   adminGet as getProduct,
   adminCreate as createProduct,
   adminUpdate as updateProduct,
@@ -21,6 +22,7 @@ import {
 import {
   overview as analyticsOverview,
   products as analyticsProducts,
+  report as analyticsReport,
 } from '../controllers/analyticsController.js'
 import { adminList as listNewsletter } from '../controllers/newsletterController.js'
 import {
@@ -35,6 +37,13 @@ import {
   offerReorderSchema,
   offerUpdateSchema,
 } from '../validators/offerValidators.js'
+import {
+  adminList as listSales,
+  adminCreate as createSale,
+  adminUpdate as updateSale,
+  adminDelete as deleteSale,
+} from '../controllers/saleController.js'
+import { saleCreateSchema, saleUpdateSchema } from '../validators/saleValidators.js'
 import { uploadImage, uploadStatus, uploadVideo } from '../controllers/uploadController.js'
 import {
   handleMulterError,
@@ -102,6 +111,7 @@ router.post('/prompts/note', validate(notePromptSchema), notePrompt)
 router.post('/prompts/background', validate(backgroundPromptSchema), backgroundPrompt)
 
 router.get('/products', listProducts)
+router.get('/products/categories', listProductCategories)
 router.get('/products/:id', getProduct)
 router.post('/products', validate(productCreateSchema), createProduct)
 router.patch('/products/:id', validate(productUpdateSchema), updateProduct)
@@ -118,6 +128,7 @@ router.post('/orders/:id/mark-cod-paid', markCodPaid)
 
 router.get('/analytics/overview', analyticsOverview)
 router.get('/analytics/products', analyticsProducts)
+router.get('/analytics/report', analyticsReport)
 
 router.get('/newsletter', listNewsletter)
 
@@ -126,5 +137,10 @@ router.post('/offers', validate(offerCreateSchema), createOffer)
 router.put('/offers/order', validate(offerReorderSchema), reorderOffers)
 router.patch('/offers/:id', validate(offerUpdateSchema), updateOffer)
 router.delete('/offers/:id', deleteOffer)
+
+router.get('/sales', listSales)
+router.post('/sales', validate(saleCreateSchema), createSale)
+router.patch('/sales/:id', validate(saleUpdateSchema), updateSale)
+router.delete('/sales/:id', deleteSale)
 
 export default router
