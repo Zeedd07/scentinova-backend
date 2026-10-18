@@ -24,16 +24,7 @@ import { writeAudit } from './auditService.js'
 import { sendOrderConfirmationEmailSafe } from './emailService.js'
 import { tokenMatchesOrder } from './orderTrackingService.js'
 import { logger } from '../utils/logger.js'
-
-function resolvePricePaise(product) {
-  if (product.pricePaise != null && Number.isFinite(Number(product.pricePaise))) {
-    return Math.round(Number(product.pricePaise))
-  }
-  if (product.price != null && Number.isFinite(Number(product.price))) {
-    return rupeesToPaise(product.price)
-  }
-  return null
-}
+import { findSize, parseSizeMl } from '../utils/productSizes.js'
 
 function orderPricing(breakdown, discountLabel = null) {
   return {
@@ -83,7 +74,8 @@ async function currentTotalForOrder(order) {
   const lines = []
   for (const item of order.items || []) {
     const product = byId.get(String(item.productId))
-    const unitPricePaise = product?.active ? resolvePricePaise(product) : null
+    const sized = product?.active ? findSize(product, parseSizeMl(item.size)) : null
+    const unitPricePaise = sized ? sized.pricePaise : null
     if (unitPricePaise == null) return null
     subtotalPaise += unitPricePaise * item.quantity
     discountPaise += lineSaleDiscount(product, unitPricePaise, item.quantity, liveSales)?.paise ?? 0
@@ -163,7 +155,13 @@ export async function quoteCart({
       throw new ApiError(400, 'PRODUCT_UNAVAILABLE', `${product.name} is no longer available.`)
     }
 
-    const unitPricePaise = resolvePricePaise(product)
+    const sized = line.sizeMl == null || line.sizeMl === '' ? findSize(product) : findSize(product, line.sizeMl)
+    if (line.sizeMl != null && line.sizeMl !== '' && !sized) {
+      throw new ApiError(400, 'INVALID_SIZE', `${product.name} is not available in that size.`, {
+        productId: product._id.toString(),
+      })
+    }
+    const unitPricePaise = sized?.pricePaise ?? null
     if (unitPricePaise == null || unitPricePaise < 100) {
       throw new ApiError(
         400,
@@ -205,7 +203,7 @@ export async function quoteCart({
       slug: product.slug,
       name: product.name,
       image: product.image,
-      size: product.size,
+      size: sized.label,
       concentration: product.concentration,
       quantity: qty,
       unitPricePaise,

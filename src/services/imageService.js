@@ -245,10 +245,33 @@ export async function uploadProductVideo(file, { slug } = {}) {
   }
 }
 
+function imageStillOnProduct(product, publicId) {
+  if (!product || !publicId) return false
+  if (product.imagePublicId === publicId) return true
+  if ((product.galleryPublicIds || []).includes(publicId)) return true
+  return (product.sizes || []).some((size) => (size.galleryPublicIds || []).includes(publicId))
+}
+
+function videoStillOnProduct(product, publicId) {
+  if (!product || !publicId) return false
+  if ((product.videos || []).some((video) => video?.publicId === publicId)) return true
+  return (product.sizes || []).some((size) =>
+    (size.videos || []).some((video) => video?.publicId === publicId),
+  )
+}
+
 /** Remove a product video from Cloudinary unless another product still uses it. */
 export async function safeDeleteUnreferencedVideo(publicId, { excludeProductId } = {}) {
   if (!publicId || !isCloudinaryReady()) return { deleted: false }
-  const filter = { 'videos.publicId': publicId }
+  if (excludeProductId) {
+    const self = await Product.findById(excludeProductId)
+      .select('videos.publicId sizes.videos.publicId')
+      .lean()
+    if (videoStillOnProduct(self, publicId)) return { deleted: false, reason: 'referenced' }
+  }
+  const filter = {
+    $or: [{ 'videos.publicId': publicId }, { 'sizes.videos.publicId': publicId }],
+  }
   if (excludeProductId) filter._id = { $ne: excludeProductId }
   if (await Product.exists(filter)) return { deleted: false, reason: 'referenced' }
   try {
@@ -321,8 +344,19 @@ export async function deleteCloudinaryAsset(publicId) {
 export async function isPublicIdReferenced(publicId, { excludeProductId } = {}) {
   if (!publicId) return false
 
+  if (excludeProductId) {
+    const self = await Product.findById(excludeProductId)
+      .select('imagePublicId galleryPublicIds sizes.galleryPublicIds')
+      .lean()
+    if (imageStillOnProduct(self, publicId)) return true
+  }
+
   const productFilter = {
-    $or: [{ imagePublicId: publicId }, { galleryPublicIds: publicId }],
+    $or: [
+      { imagePublicId: publicId },
+      { galleryPublicIds: publicId },
+      { 'sizes.galleryPublicIds': publicId },
+    ],
   }
   if (excludeProductId) {
     productFilter._id = { $ne: excludeProductId }

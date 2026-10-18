@@ -20,12 +20,26 @@ import {
   pruneNoteImages,
   resolveNoteMedia,
 } from './mediaService.js'
-import { getLiveSales, publicSaleFor } from './saleService.js'
+import { getLiveSales, priceWithSale, publicSaleFor } from './saleService.js'
+import { resolveSizes, sizeLabel, sizeMediaIds } from '../utils/productSizes.js'
 
 /**
  * Admin-only media references, fee and discount configuration never leave the admin API;
  * the resulting sale price is exposed as `sale` instead.
  */
+function publicSizeSale(product, pricePaise, liveSales) {
+  const priced = priceWithSale(product, pricePaise, liveSales)
+  if (!priced) return null
+  return {
+    kind: priced.sale.kind,
+    name: priced.sale.name,
+    percentOff: priced.sale.percentOff,
+    pricePaise: priced.salePricePaise,
+    price: paiseToRupees(priced.salePricePaise),
+    endsAt: priced.sale.endsAt ?? null,
+  }
+}
+
 function toPublic(product, liveSales = []) {
   const {
     noteImages: _noteImages,
@@ -34,7 +48,35 @@ function toPublic(product, liveSales = []) {
     discount,
     ...rest
   } = product
-  return { ...rest, sale: publicSaleFor({ ...rest, discount }, liveSales) }
+  const priced = { ...rest, discount }
+  const sizes = resolveSizes(priced).map((s) => {
+    const pub = {
+      ml: s.ml,
+      label: s.label,
+      pricePaise: s.pricePaise,
+      price: s.price,
+      sale: publicSizeSale(priced, s.pricePaise, liveSales),
+    }
+    if (s.gallery?.length) {
+      pub.gallery = s.gallery
+      pub.galleryScales = s.galleryScales
+    }
+    if (s.videos?.length) pub.videos = s.videos
+    return pub
+  })
+  return { ...rest, sizes, sale: publicSaleFor(priced, liveSales) }
+}
+
+/** When sizes are sent, the first row is the product's price and the size label. */
+function applySizeFields(input) {
+  if (!Array.isArray(input.sizes) || input.sizes.length === 0) return input
+  const [first] = input.sizes
+  return {
+    ...input,
+    price: first.price,
+    pricePaise: first.pricePaise,
+    size: sizeLabel(first.ml),
+  }
 }
 
 /** A fixed discounted price must stay below the regular price it discounts. */
@@ -49,8 +91,12 @@ function assertDiscountFits(discount, pricePaise) {
   }
 }
 
+function withResolvedSizes(json) {
+  return { ...json, sizes: resolveSizes(json) }
+}
+
 async function withAdminMedia(productDoc) {
-  const json = withMediaUrls(productDoc.toJSON())
+  const json = withResolvedSizes(withMediaUrls(productDoc.toJSON()))
   return { ...json, media: await adminProductMedia(productDoc) }
 }
 
@@ -64,6 +110,26 @@ function syncMoneyFields(input) {
     out.pricePaise = rupeesToPaise(out.price)
   }
   return out
+}
+
+function rewriteSizeMedia(size) {
+  if (!size || typeof size !== 'object') return size
+  const next = { ...size }
+  const ids = Array.isArray(next.galleryPublicIds) ? next.galleryPublicIds : []
+  if (ids.some(Boolean)) {
+    const gallery = Array.isArray(next.gallery) ? next.gallery : []
+    next.gallery = ids
+      .map((id, i) => (id ? buildDeliveryUrl(id) : gallery[i]))
+      .filter(Boolean)
+  }
+  if (Array.isArray(next.videos) && next.videos.length) {
+    next.videos = next.videos.map((v) =>
+      v?.publicId
+        ? { ...v, url: buildVideoUrl(v.publicId), posterUrl: buildVideoPosterUrl(v.publicId) }
+        : v,
+    )
+  }
+  return next
 }
 
 /** Prefer Cloudinary delivery URLs when public IDs exist (local /products paths often missing). */
@@ -85,6 +151,9 @@ function withMediaUrls(product) {
           ? { ...v, url: buildVideoUrl(v.publicId), posterUrl: buildVideoPosterUrl(v.publicId) }
           : v,
       )
+    }
+    if (Array.isArray(out.sizes) && out.sizes.length) {
+      out.sizes = out.sizes.map((size) => rewriteSizeMedia(size))
     }
   } catch {
     /* keep stored URLs if Cloudinary URL build fails */
@@ -154,7 +223,7 @@ export async function listAdminProducts(query) {
   ])
 
   return {
-    products: products.map((p) => withMediaUrls(p.toJSON())),
+    products: products.map((p) => withResolvedSizes(withMediaUrls(p.toJSON()))),
     meta: paginationMeta(page, limit, total),
   }
 }
@@ -189,6 +258,7 @@ export async function createProduct(input) {
   const noteImages = pruneNoteImages(input.notes, input.noteImages || [])
   await assertProductMediaRefs({ noteImages, backgroundAssetId: input.backgroundAssetId })
 
+  input = applySizeFields(input)
   const money = syncMoneyFields(input)
   if (money.pricePaise == null) {
     throw new ApiError(400, 'VALIDATION_ERROR', 'Price is required.')
@@ -217,6 +287,7 @@ export async function updateProduct(id, input) {
   const previousImagePublicId = product.imagePublicId
   const previousGalleryPublicIds = [...(product.galleryPublicIds || [])]
   const previousVideoIds = (product.videos || []).map((v) => v.publicId)
+  const previousSizeMedia = sizeMediaIds(product.sizes)
 
   if (input.slug || input.name) {
     const slug = slugify(input.slug || input.name || product.name)
@@ -232,6 +303,7 @@ export async function updateProduct(id, input) {
     'story',
     'currency',
     'size',
+    'sizes',
     'concentration',
     'category',
     'featured',
@@ -269,10 +341,14 @@ export async function updateProduct(id, input) {
     if (input[key] !== undefined) product[key] = input[key]
   }
 
+  if (input.sizes !== undefined) input = applySizeFields(input)
+
   if (input.price !== undefined || input.pricePaise !== undefined) {
     const money = syncMoneyFields(input)
     product.price = money.price
     product.pricePaise = money.pricePaise
+    if (input.size !== undefined) product.size = input.size
+    if (input.sizes !== undefined) product.sizes = input.sizes
   }
 
   if (input.discount !== undefined || input.price !== undefined || input.pricePaise !== undefined) {
@@ -306,6 +382,22 @@ export async function updateProduct(id, input) {
     const kept = new Set((product.videos || []).map((v) => v.publicId))
     for (const oldId of previousVideoIds) {
       if (!kept.has(oldId)) {
+        await safeDeleteUnreferencedVideo(oldId, { excludeProductId: product._id })
+      }
+    }
+  }
+
+  if (input.sizes !== undefined) {
+    const nextSizeMedia = sizeMediaIds(product.sizes)
+    const nextImages = new Set(nextSizeMedia.imageIds)
+    for (const oldId of previousSizeMedia.imageIds) {
+      if (!nextImages.has(oldId)) {
+        await safeDeleteUnreferencedAsset(oldId, { excludeProductId: product._id })
+      }
+    }
+    const nextVideos = new Set(nextSizeMedia.videoIds)
+    for (const oldId of previousSizeMedia.videoIds) {
+      if (!nextVideos.has(oldId)) {
         await safeDeleteUnreferencedVideo(oldId, { excludeProductId: product._id })
       }
     }
@@ -359,7 +451,10 @@ export async function deleteProductPermanently(id) {
   }
 
   const orderCount = await Order.countDocuments({ 'items.productId': product._id })
-  const videoIds = (product.videos || []).map((v) => v.publicId)
+  const videoIds = [
+    ...(product.videos || []).map((v) => v.publicId),
+    ...sizeMediaIds(product.sizes).videoIds,
+  ]
   await product.deleteOne()
 
   // Videos are never snapshotted on orders, so they can go with the product.

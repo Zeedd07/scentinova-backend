@@ -3,6 +3,7 @@ import { MAX_SALES, Sale } from '../models/Sale.js'
 import { Product } from '../models/Product.js'
 import { ApiError } from '../utils/ApiError.js'
 import { paiseToRupees, rupeesToPaise } from '../utils/money.js'
+import { resolveSizes } from '../utils/productSizes.js'
 import { writeAudit } from './auditService.js'
 
 export const SALE_STATUS = Object.freeze({
@@ -87,6 +88,9 @@ export function productDiscountPricePaise(product, pricePaise) {
     return salePricePaise(pricePaise, discount.percentOff)
   }
   if (discount?.type === 'PRICE' && discount.salePricePaise > 0) {
+    // A fixed price replaces the first size only. Other sizes keep their own price.
+    const [first] = resolveSizes(product)
+    if (first && pricePaise !== first.pricePaise) return null
     return Math.round(discount.salePricePaise)
   }
   return null

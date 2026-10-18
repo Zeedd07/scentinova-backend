@@ -125,6 +125,75 @@ const productDiscountSchema = z
   }))
 
 export const PRODUCT_CATEGORY_MAX = 40
+export const MAX_PRODUCT_SIZES = 6
+
+const sizeGalleryScaleSchema = z
+  .number({ invalid_type_error: 'Image size must be a number.' })
+  .min(0.5, 'Image size cannot go below 50%.')
+  .max(2, 'Image size cannot go above 200%.')
+
+/** One bottle size. Price is whole rupees, matching the product price field. */
+const sizeOptionSchema = z.object({
+  ml: z.coerce
+    .number({ invalid_type_error: 'Size must be a number of ml.' })
+    .int('Size must be a whole number of ml.')
+    .min(1, 'Size must be at least 1ml.')
+    .max(500, 'Size cannot be more than 500ml.'),
+  price: z.coerce
+    .number({ invalid_type_error: 'Price must be a number.' })
+    .finite()
+    .min(1, 'Price must be at least ₹1.')
+    .refine((v) => Number.isInteger(v), 'Price must be a whole rupee amount.'),
+  gallery: z.array(z.string()).max(30).optional().default([]),
+  galleryPublicIds: z.array(z.string()).max(30).optional().default([]),
+  galleryScales: z.array(sizeGalleryScaleSchema).max(30).optional().default([]),
+  videos: z
+    .array(productVideoSchema)
+    .max(MAX_PRODUCT_VIDEOS, `Up to ${MAX_PRODUCT_VIDEOS} videos.`)
+    .optional()
+    .default([]),
+})
+
+const sizesSchema = z
+  .array(sizeOptionSchema)
+  .min(1, 'Add at least one size.')
+  .max(MAX_PRODUCT_SIZES, `A perfume can have at most ${MAX_PRODUCT_SIZES} sizes.`)
+  .superRefine((sizes, ctx) => {
+    const seen = new Set()
+    sizes.forEach((s, i) => {
+      if (seen.has(s.ml)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [i, 'ml'],
+          message: `${s.ml}ml is already in the list.`,
+        })
+      }
+      seen.add(s.ml)
+    })
+  })
+  .transform((sizes) =>
+    sizes.map((s, index) => {
+      const row = {
+        ml: s.ml,
+        price: s.price,
+        pricePaise: Math.round(s.price * 100),
+      }
+      // The first size uses the product photos and videos. Its own media is ignored.
+      if (index === 0) return row
+      const gallery = s.gallery || []
+      if (gallery.length) {
+        const galleryPublicIds = (s.galleryPublicIds || []).slice(0, gallery.length)
+        while (galleryPublicIds.length < gallery.length) galleryPublicIds.push('')
+        row.gallery = gallery
+        row.galleryPublicIds = galleryPublicIds
+        row.galleryScales = gallery.map((_, i) =>
+          typeof s.galleryScales?.[i] === 'number' ? s.galleryScales[i] : 1,
+        )
+      }
+      if (s.videos?.length) row.videos = s.videos
+      return row
+    }),
+  )
 
 /** Required INR price — coerces numeric strings from JSON/forms. */
 const priceSchema = z.coerce
@@ -144,6 +213,7 @@ export const productCreateSchema = z.object({
   price: priceSchema,
   currency: z.string().optional().default('INR'),
   size: z.string().optional().default('50ML'),
+  sizes: sizesSchema.optional(),
   concentration: z.string().optional().default('Parfum'),
   category: z
     .string()

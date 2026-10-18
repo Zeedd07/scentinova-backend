@@ -4,6 +4,8 @@ const cartItemSchema = z.object({
   productId: z.string().min(1),
   quantity: z.coerce.number().int().min(1).max(20),
   unitPricePaise: z.coerce.number().int().optional(),
+  /** Bottle size. Omitted by older carts, which are charged the first size. */
+  sizeMl: z.coerce.number().int().min(1).max(500).optional(),
 })
 
 /** Trimmed free text; blank becomes null. */

@@ -111,6 +111,28 @@ const productSchema = new mongoose.Schema(
     discount: { type: productDiscountSchema, default: () => ({}) },
 
     size: { type: String, default: '50ML' },
+    /**
+     * Bottle sizes, each with its own price. `price` / `pricePaise` / `size` stay in
+     * sync with the first row so older clients keep working. Empty on legacy products.
+     */
+    sizes: {
+      type: [
+        new mongoose.Schema(
+          {
+            ml: { type: Number, required: true, min: 1, max: 500 },
+            pricePaise: { type: Number, required: true, min: 100 },
+            price: { type: Number, required: true, min: 1 },
+            /** Optional photos for this bottle. Empty means shoppers see the product gallery. */
+            gallery: { type: [String], default: [] },
+            galleryPublicIds: { type: [String], default: [] },
+            galleryScales: { type: [{ type: Number, min: 0.5, max: 2 }], default: [] },
+            videos: { type: [productVideoSchema], default: [] },
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     concentration: { type: String, default: 'Parfum' },
     category: { type: String, default: '' },
     featured: { type: Boolean, default: false },
