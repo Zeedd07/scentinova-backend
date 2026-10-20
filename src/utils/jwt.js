@@ -13,10 +13,12 @@ export function signRefreshToken(payload) {
   })
 }
 
+const VERIFY_OPTIONS = { algorithms: ['HS256'] }
+
 export function verifyAccessToken(token) {
-  return jwt.verify(token, env.jwtAccessSecret)
+  return jwt.verify(token, env.jwtAccessSecret, VERIFY_OPTIONS)
 }
 
 export function verifyRefreshToken(token) {
-  return jwt.verify(token, env.jwtRefreshSecret)
+  return jwt.verify(token, env.jwtRefreshSecret, VERIFY_OPTIONS)
 }

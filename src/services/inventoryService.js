@@ -140,6 +140,28 @@ export async function commitReservations(orderId) {
   return { committed: true }
 }
 
+/**
+ * Put committed stock back for an order cancelled before it left the warehouse.
+ * Each reservation is flipped COMMITTED → RELEASED atomically first, so a retry never restocks twice.
+ */
+export async function restockCommittedReservations(orderId) {
+  const committed = await InventoryReservation.find({ orderId, status: 'COMMITTED' }).select('_id')
+  let restocked = 0
+  for (const { _id } of committed) {
+    const reservation = await InventoryReservation.findOneAndUpdate(
+      { _id, status: 'COMMITTED' },
+      { $set: { status: 'RELEASED' } },
+      { new: true },
+    )
+    if (!reservation) continue
+    const product = await Product.findById(reservation.productId).select('trackInventory allowBackorder')
+    if (!product || product.trackInventory === false || product.allowBackorder) continue
+    await Product.updateOne({ _id: product._id }, { $inc: { stock: reservation.quantity } })
+    restocked += reservation.quantity
+  }
+  return { restocked }
+}
+
 export async function expireStaleReservations() {
   const now = new Date()
   const result = await InventoryReservation.updateMany(

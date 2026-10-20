@@ -207,6 +207,32 @@ describe('date ranges', () => {
     assert.equal(week.timeline.points.length, 7)
   })
 
+  it('keeps a custom India-time range inclusive and rejects bad dates', async () => {
+    await makeOrder({ itemPaise: 40000, createdAt: new Date('2026-10-05T06:00:00Z') })
+    await makeOrder({ itemPaise: 90000, createdAt: new Date('2026-09-01T06:00:00Z') })
+
+    const custom = await getAnalyticsReport({
+      range: 'custom',
+      from: '2026-10-01',
+      to: '2026-10-11',
+      now,
+    })
+    assert.equal(custom.range.key, 'custom')
+    assert.equal(custom.money.receivedPaise, 40000)
+    assert.equal(custom.timeline.points[0].key, '2026-10-01')
+    assert.equal(custom.timeline.points.at(-1).key, '2026-10-11')
+
+    const bad = await request(app)
+      .get('/api/admin/analytics/report?range=custom&from=2026-10-11&to=2026-10-01')
+      .set('Authorization', `Bearer ${token}`)
+    assert.equal(bad.status, 400)
+
+    const future = await request(app)
+      .get('/api/admin/analytics/report?range=custom&from=2026-10-01&to=2099-01-01')
+      .set('Authorization', `Bearer ${token}`)
+    assert.equal(future.status, 400)
+  })
+
   it('charts long all-time spans by month', async () => {
     await makeOrder({ itemPaise: 50000, createdAt: new Date(now - 200 * DAY) })
     await makeOrder({ itemPaise: 30000, createdAt: new Date(now - DAY) })
@@ -234,7 +260,48 @@ describe('date ranges', () => {
   })
 })
 
+describe('orders placed', () => {
+  const now = new Date('2026-10-11T12:00:00Z')
+
+  it('counts every order placed in the range by status and payment method, apart from revenue', async () => {
+    await makeOrder({ createdAt: new Date('2026-10-11T05:00:00Z') })
+    await makeOrder({ method: 'COD', pay: 'PENDING', status: 'SHIPPED', createdAt: new Date('2026-10-10T05:00:00Z') })
+    await makeOrder({ status: 'CANCELLED', pay: 'CREATED', createdAt: new Date('2026-10-10T06:00:00Z') })
+    await makeOrder({ status: 'PAYMENT_EXPIRED', pay: 'FAILED', createdAt: new Date(now - 40 * DAY) })
+
+    const week = await getAnalyticsReport({ range: '7d', now })
+    assert.equal(week.placed.orders, 3)
+    assert.deepEqual(week.placed.byStatus, { CONFIRMED: 1, SHIPPED: 1, CANCELLED: 1 })
+    assert.deepEqual(week.placed.byMethod, { PREPAID: 2, COD: 1 })
+    assert.equal(week.money.paidOrders, 1, 'placed orders are not revenue')
+
+    const byDay = Object.fromEntries(week.timeline.points.map((p) => [p.key, p.placedOrders]))
+    assert.equal(byDay['2026-10-11'], 1)
+    assert.equal(byDay['2026-10-10'], 2)
+    assert.equal(week.timeline.points.reduce((s, p) => s + p.placedOrders, 0), week.placed.orders)
+  })
+
+  it('returns zeros, not NaN, when nothing happened', async () => {
+    const week = await getAnalyticsReport({ range: '7d', now })
+    assert.deepEqual(week.placed, { orders: 0, byStatus: {}, byMethod: { PREPAID: 0, COD: 0 } })
+    assert.equal(week.money.averageOrderPaise, 0)
+    assert.ok(week.timeline.points.every((p) => p.netPaise === 0 && p.placedOrders === 0))
+  })
+})
+
 describe('admin dashboard', () => {
+  it('counts every low-stock product, not just the listed ones', async () => {
+    for (let i = 0; i < 14; i += 1) {
+      await createProduct({ name: `Low ${String(i).padStart(2, '0')}`, stock: i % 3 })
+    }
+    await createProduct({ name: 'Plenty', stock: 9 })
+    const res = await request(app).get('/api/admin/dashboard').set('Authorization', `Bearer ${token}`)
+    assert.equal(res.status, 200)
+    assert.equal(res.body.data.lowStockCount, 14)
+    assert.equal(res.body.data.lowStock.length, 12)
+    assert.equal(res.body.data.lowStockThreshold, 8)
+  })
+
   it('shows net collected revenue, not unpaid or uncollected orders', async () => {
     await makeOrder({ itemPaise: 100000 })
     await makeOrder({ method: 'COD', pay: 'PENDING', status: 'CONFIRMED', itemPaise: 500000 })

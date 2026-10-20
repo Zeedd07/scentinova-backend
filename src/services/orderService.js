@@ -1,3 +1,4 @@
+import mongoose from 'mongoose'
 import { Order } from '../models/Order.js'
 import { Shipment } from '../models/Shipment.js'
 import { Payment } from '../models/Payment.js'
@@ -10,7 +11,7 @@ import {
 } from '../utils/orderStatus.js'
 import { writeAudit } from './auditService.js'
 import { notify, NotificationEvent } from './emailService.js'
-import { releaseReservations } from './inventoryService.js'
+import { releaseReservations, restockCommittedReservations } from './inventoryService.js'
 import * as razorpayService from './razorpayService.js'
 import { paiseToRupees } from '../utils/money.js'
 
@@ -31,9 +32,42 @@ function normalizeOrderView(order) {
   return o
 }
 
+const PAYMENT_FILTERS = new Set(['PREPAID', 'COD'])
+const SORT_KEYS = {
+  newest: ['createdAt', -1],
+  oldest: ['createdAt', 1],
+  'amount-high': ['pricing.totalPaise', -1],
+  'amount-low': ['pricing.totalPaise', 1],
+}
+
+function buildOrderSort(value) {
+  if (value == null || value === '') return { createdAt: -1 }
+  if (typeof value !== 'string') throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid sort.')
+  const keys = value.split(',').map((part) => part.trim()).filter(Boolean)
+  if (!keys.length || keys.length > 3 || keys.some((key) => !SORT_KEYS[key])) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid sort.')
+  }
+  const sort = {}
+  const used = new Set()
+  for (const key of keys) {
+    const [field, direction] = SORT_KEYS[key]
+    if (used.has(field)) continue
+    used.add(field)
+    sort[field] = direction
+  }
+  if (sort.createdAt == null) sort.createdAt = -1
+  return sort
+}
+
 export async function listAdminOrders(query = {}) {
   const filter = {}
+  if (query.status != null && typeof query.status !== 'string') {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid status filter.')
+  }
   if (query.status) filter.status = query.status
+  if (query.q != null && typeof query.q !== 'string') {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid search.')
+  }
   if (query.q) {
     const re = new RegExp(String(query.q).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
     filter.$or = [
@@ -48,13 +82,30 @@ export async function listAdminOrders(query = {}) {
       { 'fulfillment.trackingNumber': re },
     ]
   }
+  if (query.method != null && query.method !== '') {
+    if (typeof query.method !== 'string' || !PAYMENT_FILTERS.has(query.method)) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'Payment filter must be prepaid or cash on delivery.')
+    }
+    filter.paymentMethod = query.method
+  }
+  if (query.product != null && query.product !== '') {
+    if (typeof query.product !== 'string') {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid product filter.')
+    }
+    const ids = [...new Set(query.product.split(',').map((part) => part.trim()).filter(Boolean))]
+    if (!ids.length || ids.length > 30 || ids.some((id) => !mongoose.isValidObjectId(id))) {
+      throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid product filter.')
+    }
+    filter['items.productId'] = { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) }
+  }
 
   const page = Math.max(1, Number(query.page) || 1)
   const limit = Math.min(100, Math.max(1, Number(query.limit) || 50))
   const skip = (page - 1) * limit
+  const sort = buildOrderSort(query.sort)
 
   const [orders, total] = await Promise.all([
-    Order.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    Order.find(filter).sort(sort).skip(skip).limit(limit),
     Order.countDocuments(filter),
   ])
 
@@ -182,7 +233,9 @@ export async function updateOrderStatus(
         'Shipped/delivered orders must use the return/refund workflow.',
       )
     }
-    if (!order.inventoryCommitted) {
+    if (order.inventoryCommitted) {
+      await restockCommittedReservations(order._id)
+    } else {
       await releaseReservations(order._id, 'RELEASED')
     }
     order.fulfillmentStatus = 'cancelled'
@@ -421,14 +474,18 @@ export async function refundOrder(id, { amountPaise, reason, admin } = {}) {
   }
 
   const maxPaise = order.pricing?.totalPaise || order.payment.amountPaise
-  const refundAmount = amountPaise != null ? Number(amountPaise) : maxPaise
-  if (!Number.isInteger(refundAmount) || refundAmount < 100 || refundAmount > maxPaise) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid refund amount.')
-  }
-
-  if (order.status === 'REFUNDED') {
+  const existing = await Payment.findOne({ orderId: order._id }).select('refundedPaise')
+  const alreadyRefunded = existing?.refundedPaise || 0
+  const remainingPaise = maxPaise - alreadyRefunded
+  if (order.status === 'REFUNDED' || remainingPaise <= 0) {
     throw new ApiError(400, 'REFUND_NOT_ALLOWED', 'Order is already fully refunded.')
   }
+
+  const refundAmount = amountPaise != null ? Number(amountPaise) : remainingPaise
+  if (!Number.isInteger(refundAmount) || refundAmount < 100 || refundAmount > remainingPaise) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Invalid refund amount.')
+  }
+  const fullyRefunded = alreadyRefunded + refundAmount >= maxPaise
 
   if (!razorpayService.isRazorpayReady()) {
     throw new ApiError(501, 'PAYMENT_UNAVAILABLE', 'Razorpay is not configured.')
@@ -458,7 +515,7 @@ export async function refundOrder(id, { amountPaise, reason, admin } = {}) {
       $addToSet: { refundIds: refund.id },
       $inc: { refundedPaise: refundAmount },
       $set: {
-        status: refundAmount >= maxPaise ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
+        status: fullyRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED',
       },
     },
   )
@@ -466,7 +523,7 @@ export async function refundOrder(id, { amountPaise, reason, admin } = {}) {
   // Webhook should finalize; optimistically mark when provider returns processed
   if (refund.status === 'processed') {
     order.status = 'REFUNDED'
-    order.payment.status = refundAmount >= maxPaise ? 'REFUNDED' : 'PARTIALLY_REFUNDED'
+    order.payment.status = fullyRefunded ? 'REFUNDED' : 'PARTIALLY_REFUNDED'
     order.paymentStatus = 'REFUNDED'
     order.statusHistory.push({
       previousStatus: 'REFUND_PENDING',
@@ -518,6 +575,9 @@ async function refundCodOrder(order, { amountPaise, reason, admin } = {}) {
 
   if (payStatus === 'PENDING' || payStatus === 'CREATED') {
     // Never collected — cancel / close without inventing a Razorpay refund
+    if (order.inventoryCommitted && !['SHIPPED', 'OUT_FOR_DELIVERY', 'DELIVERED'].includes(prev)) {
+      await restockCommittedReservations(order._id)
+    }
     order.status = 'CANCELLED'
     order.payment = {
       ...(order.payment?.toObject?.() || order.payment || {}),

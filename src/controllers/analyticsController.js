@@ -13,7 +13,9 @@ export const overview = asyncHandler(async (_req, res) => {
 
 export const report = asyncHandler(async (req, res) => {
   const range = typeof req.query.range === 'string' ? req.query.range : '30d'
-  const data = await analyticsService.getAnalyticsReport({ range })
+  const from = typeof req.query.from === 'string' ? req.query.from : undefined
+  const to = typeof req.query.to === 'string' ? req.query.to : undefined
+  const data = await analyticsService.getAnalyticsReport({ range, from, to })
   res.json({ success: true, data })
 })
 

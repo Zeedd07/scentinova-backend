@@ -165,10 +165,11 @@ export async function listPublicProducts(query) {
   const { page, limit, skip } = parsePagination(query)
   const filter = { active: true }
 
-  if (query.category) filter.category = query.category
+  if (typeof query.category === 'string' && query.category) filter.category = query.category
   if (query.featured === 'true') filter.featured = true
-  if (query.search) {
-    const re = new RegExp(String(query.search).trim(), 'i')
+  const search = typeof query.search === 'string' ? query.search.trim().slice(0, 80) : ''
+  if (search) {
+    const re = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
     filter.$or = [
       { name: re },
       { tagline: re },

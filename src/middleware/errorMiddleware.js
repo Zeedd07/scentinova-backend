@@ -41,6 +41,13 @@ export function errorMiddleware(err, _req, res, _next) {
       : 'A record with that value already exists.'
   }
 
+  if (err.name === 'CastError') {
+    status = 400
+    code = 'INVALID_ID'
+    message = 'That id is not valid.'
+    fields = null
+  }
+
   if (err.name === 'JsonWebTokenError' || err.name === 'TokenExpiredError') {
     status = 401
     code = 'TOKEN_INVALID'

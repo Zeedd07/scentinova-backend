@@ -67,6 +67,8 @@ const TIME_ZONE = 'Asia/Kolkata'
 const MAX_DAILY_BUCKETS = 92
 
 export const ANALYTICS_RANGES = { '7d': 7, '30d': 30, '90d': 90, all: null }
+const CUSTOM_RANGE = 'custom'
+const MAX_CUSTOM_DAYS = 366 * 5
 
 export const REVENUE_STATE = {
   PAID: 'PAID',
@@ -89,6 +91,9 @@ const COD_OPEN_STATUSES = new Set([
 
 const ORDER_FIELDS =
   'status paymentStatus paymentMethod payment pricing total subtotal shipping discount codFee convenienceFee items createdAt'
+
+/** Active products at or below this many units are flagged as low stock. */
+export const LOW_STOCK_THRESHOLD = 8
 
 function orderStatus(order) {
   const raw = String(order.status || '')
@@ -174,6 +179,37 @@ function startOfDayIst(now, daysBack) {
   return new Date(`${dayKey(new Date(now.getTime() - daysBack * DAY_MS))}T00:00:00+05:30`)
 }
 
+/** `YYYY-MM-DD` as midnight in India. Rejects impossible dates such as 31 February. */
+function istDay(isoDate) {
+  if (typeof isoDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Dates must look like 2026-10-20.')
+  }
+  const date = new Date(`${isoDate}T00:00:00+05:30`)
+  if (Number.isNaN(date.getTime()) || dayKey(date) !== isoDate) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Enter a real calendar date.')
+  }
+  return date
+}
+
+function customWindow(fromInput, toInput, now) {
+  if (typeof fromInput !== 'string' || typeof toInput !== 'string') {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Custom range needs a start date and an end date.')
+  }
+  const start = istDay(fromInput)
+  const endDay = istDay(toInput)
+  if (start > endDay) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Start date must be on or before the end date.')
+  }
+  if (endDay > istDay(dayKey(now))) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'End date cannot be in the future.')
+  }
+  const spanDays = Math.round((endDay - start) / DAY_MS) + 1
+  if (spanDays > MAX_CUSTOM_DAYS) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Choose a range of 5 years or less.')
+  }
+  return { from: start, until: new Date(endDay.getTime() + DAY_MS - 1) }
+}
+
 function bucketKeys(fromDate, now) {
   const days = Math.max(1, Math.ceil((now - fromDate) / DAY_MS))
   const monthly = days > MAX_DAILY_BUCKETS
@@ -219,17 +255,25 @@ function emptyMoney() {
 }
 
 /**
- * Admin analytics report for the last 7, 30 or 90 calendar days (India time, today included) or `all`.
+ * Admin analytics report for the last 7, 30 or 90 calendar days (India time, today included),
+ * `all`, or a custom `from`/`to` pair of `YYYY-MM-DD` India dates (both days included).
  * Money uses the day it was collected; unpaid and COD-awaiting orders use the day they were placed.
  */
-export async function getAnalyticsReport({ range = '30d', now = new Date() } = {}) {
-  if (!Object.hasOwn(ANALYTICS_RANGES, range)) {
-    throw new ApiError(400, 'VALIDATION_ERROR', 'Range must be one of 7d, 30d, 90d or all.')
+export async function getAnalyticsReport({ range = '30d', from: fromInput, to: toInput, now = new Date() } = {}) {
+  let from = null
+  let until = now
+  if (range === CUSTOM_RANGE) {
+    const window = customWindow(fromInput, toInput, now)
+    from = window.from
+    until = window.until
+  } else if (!Object.hasOwn(ANALYTICS_RANGES, range)) {
+    throw new ApiError(400, 'VALIDATION_ERROR', 'Range must be one of 7d, 30d, 90d, all or custom.')
+  } else {
+    const days = ANALYTICS_RANGES[range]
+    from = days ? startOfDayIst(now, days - 1) : null
   }
-  const days = ANALYTICS_RANGES[range]
-  const from = days ? startOfDayIst(now, days - 1) : null
-  const inRange = (date) => (!from || date >= from) && date <= now
-  const eventMatch = from ? { createdAt: { $gte: from, $lte: now } } : {}
+  const inRange = (date) => (!from || date >= from) && date <= until
+  const eventMatch = from ? { createdAt: { $gte: from, $lte: until } } : {}
 
   const [orders, refunds, products, views, addToCarts, checkoutStarted, viewAgg, cartAgg] =
     await Promise.all([
@@ -250,13 +294,27 @@ export async function getAnalyticsReport({ range = '30d', now = new Date() } = {
     ])
 
   const money = emptyMoney()
+  const placed = { orders: 0, byStatus: {}, byMethod: { PREPAID: 0, COD: 0 } }
   const productSales = new Map()
   const series = new Map()
+  const placedSeries = new Map()
   let firstPaidAt = null
+  let firstPlacedAt = null
 
   for (const order of orders) {
     const state = revenueState(order)
     const total = orderTotalPaise(order)
+
+    const createdAt = new Date(order.createdAt)
+    if (!firstPlacedAt || createdAt < firstPlacedAt) firstPlacedAt = createdAt
+    if (inRange(createdAt)) {
+      const status = orderStatus(order)
+      placed.orders += 1
+      placed.byStatus[status] = (placed.byStatus[status] || 0) + 1
+      placed.byMethod[isCod(order) ? 'COD' : 'PREPAID'] += 1
+      const key = dayKey(createdAt)
+      placedSeries.set(key, (placedSeries.get(key) || 0) + 1)
+    }
 
     if (state !== REVENUE_STATE.PAID) {
       if (!inRange(new Date(order.createdAt))) continue
@@ -315,20 +373,32 @@ export async function getAnalyticsReport({ range = '30d', now = new Date() } = {
   money.netPaise = money.receivedPaise - money.refundedPaise
   money.averageOrderPaise = money.paidOrders ? Math.round(money.receivedPaise / money.paidOrders) : 0
 
-  const chartFrom = from || firstPaidAt || now
-  const { keys, unit } = bucketKeys(chartFrom, now)
+  const earliest = [firstPaidAt, firstPlacedAt].filter(Boolean).sort((a, b) => a - b)[0]
+  const chartFrom = from || earliest || until
+  const { keys, unit } = bucketKeys(chartFrom, until)
+  const bucketOf = (key) => (unit === 'month' ? key.slice(0, 7) : key)
   const merged = new Map()
   for (const [key, point] of series) {
-    const bucket = unit === 'month' ? key.slice(0, 7) : key
+    const bucket = bucketOf(key)
     const acc = merged.get(bucket) || { receivedPaise: 0, refundedPaise: 0, orders: 0 }
     acc.receivedPaise += point.receivedPaise
     acc.refundedPaise += point.refundedPaise
     acc.orders += point.orders
     merged.set(bucket, acc)
   }
+  const placedMerged = new Map()
+  for (const [key, n] of placedSeries) {
+    const bucket = bucketOf(key)
+    placedMerged.set(bucket, (placedMerged.get(bucket) || 0) + n)
+  }
   const timeline = keys.map((key) => {
     const p = merged.get(key) || { receivedPaise: 0, refundedPaise: 0, orders: 0 }
-    return { key, ...p, netPaise: p.receivedPaise - p.refundedPaise }
+    return {
+      key,
+      ...p,
+      netPaise: p.receivedPaise - p.refundedPaise,
+      placedOrders: placedMerged.get(key) || 0,
+    }
   })
 
   const viewsMap = new Map(viewAgg.map((r) => [String(r._id), r.n]))
@@ -359,8 +429,9 @@ export async function getAnalyticsReport({ range = '30d', now = new Date() } = {
   })
 
   return {
-    range: { key: range, from: from ? from.toISOString() : null, to: now.toISOString() },
+    range: { key: range, from: from ? from.toISOString() : null, to: until.toISOString() },
     money,
+    placed,
     funnel: { views, addToCarts, checkoutStarted, paidOrders: money.paidOrders },
     timeline: { unit, points: timeline },
     products: productRows,
@@ -371,12 +442,14 @@ export async function getAnalyticsReport({ range = '30d', now = new Date() } = {
 
 /** Admin dashboard KPIs (all time). Revenue is net money collected, in rupees. */
 export async function getOverview() {
-  const [report, productCount, activeCount, recentOrders, lowStock] = await Promise.all([
+  const lowStockFilter = { active: true, stock: { $lte: LOW_STOCK_THRESHOLD } }
+  const [report, productCount, activeCount, recentOrders, lowStock, lowStockCount] = await Promise.all([
     getAnalyticsReport({ range: 'all' }),
     Product.countDocuments(),
     Product.countDocuments({ active: true }),
     Order.find().sort({ createdAt: -1 }).limit(8),
-    Product.find({ active: true, stock: { $lte: 8 } }).sort({ stock: 1 }).limit(12),
+    Product.find(lowStockFilter).sort({ stock: 1, name: 1 }).limit(12),
+    Product.countDocuments(lowStockFilter),
   ])
   const { money, funnel } = report
 
@@ -392,6 +465,8 @@ export async function getOverview() {
     codAwaitingRevenue: money.codAwaiting.paise / 100,
     conversionRate: funnel.views ? Number(((money.paidOrders / funnel.views) * 100).toFixed(2)) : 0,
     lowStock: lowStock.map((p) => p.toJSON()),
+    lowStockCount,
+    lowStockThreshold: LOW_STOCK_THRESHOLD,
     recentOrders: recentOrders.map((o) => o.toJSON()),
   }
 }

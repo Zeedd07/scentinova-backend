@@ -150,7 +150,7 @@ const sizeOptionSchema = z.object({
   videos: z
     .array(productVideoSchema)
     .max(MAX_PRODUCT_VIDEOS, `Up to ${MAX_PRODUCT_VIDEOS} videos.`)
-    .optional()
+  .optional()
     .default([]),
 })
 

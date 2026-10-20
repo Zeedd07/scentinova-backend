@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ADMIN_SETTABLE_STATUSES } from '../utils/orderStatus.js'
 
 const cartItemSchema = z.object({
   productId: z.string().min(1),
@@ -106,15 +107,7 @@ export const paymentFailedSchema = z.object({
 })
 
 export const adminOrderStatusSchema = z.object({
-  status: z.enum([
-    'PROCESSING',
-    'PACKED',
-    'SHIPPED',
-    'OUT_FOR_DELIVERY',
-    'DELIVERED',
-    'CANCELLED',
-    'REFUND_PENDING',
-  ]),
+  status: z.enum(ADMIN_SETTABLE_STATUSES),
   note: optionalText(500),
   customerMessage: optionalText(280),
   shipping: z
